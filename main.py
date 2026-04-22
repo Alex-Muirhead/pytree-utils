@@ -97,13 +97,20 @@ class _IndexedHelper:
         remaining = full_prefix[_count_index_dims(self._idx) :]
         return self._node._reindex(self._idx, new_prefix=(), new_shape=remaining)
 
-    def set(self, values: ArrayTree) -> ArrayTree:
+    def set(self, values: Any) -> ArrayTree:
         """Return a copy of the node with indexed leaves updated from *values*.
 
-        *values* should be the same type as the node returned by ``.get()``
-        (i.e. same type, leaf shapes matching ``arr[idx].shape``).
+        *values* is broadcast to the structure of the node via
+        ``jax.tree.broadcast``, so it can be:
+
+        * A scalar or ``jax.Array`` — broadcast to every leaf (analogous to
+          ``jnp.array(...).at[:].set(0)``).
+        * An ``ArrayTree`` of the same type — each leaf is set from the
+          corresponding leaf in *values*.
         """
-        return self._node._set_indexed(self._idx, values)
+        idx = self._idx
+        values_tree = jax.tree.broadcast(values, self._node)
+        return jax.tree.map(lambda arr, v: arr.at[idx].set(v), self._node, values_tree)
 
 
 @dc.dataclass(frozen=True)
@@ -363,30 +370,6 @@ class ArrayTree(eqx.Module):
 
         return type(self)(**kwargs)
 
-    def _set_indexed(self, idx: tuple, values: ArrayTree) -> Self:
-        """Return a copy with indexed leaf arrays updated from *values*.
-
-        Walks both ``self`` and *values* in parallel, applying
-        ``arr.at[idx].set(val)`` to each corresponding leaf pair.
-        """
-        kwargs: dict[str, Any] = {
-            f.name: getattr(self, f.name) for f in dc.fields(self) if f.init
-        }
-
-        for f in dc.fields(self):
-            if not f.init or f.metadata.get("static", False):
-                continue
-
-            val = getattr(self, f.name)
-            new_val = getattr(values, f.name)
-
-            if isinstance(val, jax.Array):
-                kwargs[f.name] = val.at[idx].set(new_val)
-            elif isinstance(val, ArrayTree):
-                kwargs[f.name] = val._set_indexed(idx, new_val)
-
-        return type(self)(**kwargs)
-
 
 # ---------------------------------------------------------------------------
 # Example / smoke test
@@ -428,11 +411,8 @@ if __name__ == "__main__":
     print("world.vel.at[0,3].get() — vx shape:", s03.vx.shape)  # (1,)
     print("world.vel.at[0,3].get() — vy shape:", s03.vy.shape)  # (2,)
 
-    # set: put ones into world[0]
-    world2 = world.at[0].set(world.at[0].get().ones_like())
-    print("\nworld.at[0].set(...) — vel.vx[0,0,0]:", world2.vel.vx[0, 0, 0])  # 1.0
-    print("world.at[0].set(...) — vel.vx[1,0,0]:", world2.vel.vx[1, 0, 0])  # 0.0
+    # set: broadcast scalar 1.0 into world[0]
+    world2 = world.at[0].set(1.0)
+    print("\nworld.at[0].set(1.0) — vel.vx[0,0,0]:", world2.vel.vx[0, 0, 0])  # 1.0
+    print("world.at[0].set(1.0) — vel.vx[1,0,0]:", world2.vel.vx[1, 0, 0])  # 0.0
 
-    test = jnp.array([1, 2, 3])
-    first = test.at[:].set(0)
-    print(first)
