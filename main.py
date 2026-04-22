@@ -65,6 +65,69 @@ def _field_default(field: dc.Field, *, throw: bool = True) -> Any:
     return None
 
 
+def _count_index_dims(idx: tuple) -> int:
+    """Count how many existing dimensions are addressed by an index tuple.
+
+    Each element other than ``None`` / ``numpy.newaxis`` addresses one
+    dimension.  ``Ellipsis`` is counted as one slot; callers that need exact
+    accounting for Ellipsis should handle it separately.
+    """
+    return sum(i is not None for i in idx)
+
+
+# ---------------------------------------------------------------------------
+# Index helpers  (.at[idx].get() / .at[idx].set())
+# ---------------------------------------------------------------------------
+
+
+@dc.dataclass(frozen=True)
+class _IndexedHelper:
+    """Returned by ``ArrayTree.at[idx]``; provides ``.get()`` and ``.set()``."""
+
+    _node: ArrayTree
+    _idx: tuple
+
+    def get(self) -> ArrayTree:
+        """Return a new node with ``idx`` applied to all leaf arrays.
+
+        The result's ``shape`` and ``_prefix`` are updated to reflect the
+        consumed prefix dimensions.
+        """
+        full_prefix = self._node._prefix + self._node.shape
+        remaining = full_prefix[_count_index_dims(self._idx) :]
+        return self._node._reindex(self._idx, new_prefix=(), new_shape=remaining)
+
+    def set(self, values: ArrayTree) -> ArrayTree:
+        """Return a copy of the node with indexed leaves updated from *values*.
+
+        *values* should be the same type as the node returned by ``.get()``
+        (i.e. same type, leaf shapes matching ``arr[idx].shape``).
+        """
+        return self._node._set_indexed(self._idx, values)
+
+
+@dc.dataclass(frozen=True)
+class _IndexHelper:
+    """Returned by ``ArrayTree.at``; validates the index and captures it."""
+
+    _node: ArrayTree
+
+    def __getitem__(self, idx: Any) -> _IndexedHelper:
+        if not isinstance(idx, tuple):
+            idx = (idx,)
+
+        full_prefix = self._node._prefix + self._node.shape
+        n = _count_index_dims(idx)
+
+        if n > len(full_prefix):
+            raise IndexError(
+                f"{type(self._node).__name__} has a {len(full_prefix)}-dimensional "
+                f"prefix {full_prefix}; cannot index with {n} dimension(s)"
+            )
+
+        return _IndexedHelper(self._node, idx)
+
+
 # ---------------------------------------------------------------------------
 # ArrayTree
 # ---------------------------------------------------------------------------
@@ -94,8 +157,7 @@ class ArrayTree(eqx.Module):
     equinox module that can be inspected and modified::
 
         proto = World.default()
-        # swap in a different child, adjust shapes, etc.
-        proto = eqx.tree_at(lambda t: t.vel.shape, proto, (5,))
+        proto = eqx.tree_at(lambda t: t.vel, proto, proto.vel.with_shape((5,)))
 
     **Stage 3 – Instantiation**
     Call ``.build()`` (or the ``.zeros()`` / ``.ones()`` shortcuts) to
@@ -105,10 +167,35 @@ class ArrayTree(eqx.Module):
 
         world = proto.zeros()
         world.vel.vx.shape  # (2, 5, 1)  — World(2) + Vel(5) + leaf(1)
-        world.vel.vy.shape  # (2, 5, 2)
+
+    **Indexing**
+    Use ``.at[idx].get()`` / ``.at[idx].set(values)`` to index into the
+    accumulated prefix of a node.  Indices are validated so they cannot
+    reach into the leaf-specific shape dimensions::
+
+        world.at[0].get()          # ok  — World has a 1-dim prefix
+        world.at[0, 1].get()       # IndexError — too many dims for World
+        world.vel.at[0, 3].get()   # ok  — vel's accumulated prefix is (2, 5)
+        world.vel.at[0, 3, 0].get()  # IndexError
     """
 
     shape: ShapeType = eqx.field(static=True, kw_only=True, default=())
+    # Accumulated prefix from all ancestors, set by build(). () in prototypes.
+    _prefix: ShapeType = eqx.field(static=True, kw_only=True, default=(), repr=False)
+
+    # ------------------------------------------------------------------
+    # Indexing entry point
+    # ------------------------------------------------------------------
+
+    @property
+    def at(self) -> _IndexHelper:
+        """Entry point for prefix-validated indexing.
+
+        Returns an ``_IndexHelper`` whose ``__getitem__`` validates the index
+        against the node's accumulated prefix (``_prefix + shape``) and
+        returns an ``_IndexedHelper`` with ``.get()`` and ``.set()`` methods.
+        """
+        return _IndexHelper(self)
 
     # ------------------------------------------------------------------
     # Stage 2 — prototype construction
@@ -118,8 +205,8 @@ class ArrayTree(eqx.Module):
     def default(cls) -> Self:
         """Build a prototype tree (Stage 2).
 
-        * Static fields (including ``shape``) are filled with their declared
-          defaults.
+        * Static fields (including ``shape`` and ``_prefix``) are filled with
+          their declared defaults.
         * Fields declared with ``leaf()`` become ``LeafSpec`` objects.
         * Fields whose type hint resolves to an ``ArrayTree`` subclass are
           populated by recursively calling ``SubClass.default()``, unless
@@ -135,7 +222,7 @@ class ArrayTree(eqx.Module):
             if not f.init:
                 continue
 
-            # Static fields (shape, etc.) — use declared default
+            # Static fields (shape, _prefix, …) — use declared default
             if f.metadata.get("static", False):
                 kwargs[f.name] = _field_default(f)
                 continue
@@ -169,6 +256,10 @@ class ArrayTree(eqx.Module):
         ``jax.Array`` with shape ``accumulated + leaf.shape``, created by
         calling ``init_fn(shape, dtype)``.
 
+        Also records each node's incoming ``prefix`` in the ``_prefix``
+        field so that ``.at`` indexing can validate against the full
+        accumulated prefix.
+
         Args:
             prefix: Extra leading dimensions prepended before this node's
                     own ``shape`` (useful for adding an outer batch axis).
@@ -183,6 +274,9 @@ class ArrayTree(eqx.Module):
 
         for f in dc.fields(self):
             if not f.init:
+                continue
+            if f.name == "_prefix":
+                kwargs["_prefix"] = prefix  # record incoming prefix
                 continue
             if f.metadata.get("static", False):
                 kwargs[f.name] = getattr(self, f.name)
@@ -239,6 +333,60 @@ class ArrayTree(eqx.Module):
         }
         return type(self)(**kwargs)
 
+    # ------------------------------------------------------------------
+    # Private helpers for .at indexing
+    # ------------------------------------------------------------------
+
+    def _reindex(self, idx: tuple, new_prefix: ShapeType, new_shape: ShapeType) -> Self:
+        """Apply *idx* to all leaf arrays and update prefix/shape metadata.
+
+        For each child ``ArrayTree``, propagates ``new_prefix + new_shape``
+        as their new ``_prefix`` (reflecting what the parent now contributes)
+        while leaving the child's own ``shape`` unchanged.
+        """
+        kwargs: dict[str, Any] = {"_prefix": new_prefix, "shape": new_shape}
+
+        for f in dc.fields(self):
+            if not f.init or f.name in ("_prefix", "shape"):
+                continue
+            if f.metadata.get("static", False):
+                kwargs[f.name] = getattr(self, f.name)
+                continue
+
+            val = getattr(self, f.name)
+            if isinstance(val, jax.Array):
+                kwargs[f.name] = val[idx]
+            elif isinstance(val, ArrayTree):
+                kwargs[f.name] = val._reindex(idx, new_prefix + new_shape, val.shape)
+            else:
+                kwargs[f.name] = val
+
+        return type(self)(**kwargs)
+
+    def _set_indexed(self, idx: tuple, values: ArrayTree) -> Self:
+        """Return a copy with indexed leaf arrays updated from *values*.
+
+        Walks both ``self`` and *values* in parallel, applying
+        ``arr.at[idx].set(val)`` to each corresponding leaf pair.
+        """
+        kwargs: dict[str, Any] = {
+            f.name: getattr(self, f.name) for f in dc.fields(self) if f.init
+        }
+
+        for f in dc.fields(self):
+            if not f.init or f.metadata.get("static", False):
+                continue
+
+            val = getattr(self, f.name)
+            new_val = getattr(values, f.name)
+
+            if isinstance(val, jax.Array):
+                kwargs[f.name] = val.at[idx].set(new_val)
+            elif isinstance(val, ArrayTree):
+                kwargs[f.name] = val._set_indexed(idx, new_val)
+
+        return type(self)(**kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Example / smoke test
@@ -263,7 +411,7 @@ if __name__ == "__main__":
     print(proto)
 
     # Optional Stage 2 edit: swap a child node with a different shape.
-    proto = eqx.tree_at(lambda t: t.vel, proto, proto.vel.with_shape((4,)))
+    proto: World = eqx.tree_at(lambda t: t.vel, proto, proto.vel.with_shape((4,)))
 
     # Stage 3: instantiate
     world = proto.zeros()
@@ -271,3 +419,20 @@ if __name__ == "__main__":
     print(world)
     print("vel.vx shape:", world.vel.vx.shape)  # (2, 4, 1)
     print("vel.vy shape:", world.vel.vy.shape)  # (2, 4, 2)
+
+    # Indexing
+    print("\nIndexing:")
+    s0 = world.at[0].get()
+    print("world.at[0].get() — vel.vx shape:", s0.vel.vx.shape)  # (4, 1)
+    s03 = world.vel.at[0, 3].get()
+    print("world.vel.at[0,3].get() — vx shape:", s03.vx.shape)  # (1,)
+    print("world.vel.at[0,3].get() — vy shape:", s03.vy.shape)  # (2,)
+
+    # set: put ones into world[0]
+    world2 = world.at[0].set(world.at[0].get().ones_like())
+    print("\nworld.at[0].set(...) — vel.vx[0,0,0]:", world2.vel.vx[0, 0, 0])  # 1.0
+    print("world.at[0].set(...) — vel.vx[1,0,0]:", world2.vel.vx[1, 0, 0])  # 0.0
+
+    test = jnp.array([1, 2, 3])
+    first = test.at[:].set(0)
+    print(first)
