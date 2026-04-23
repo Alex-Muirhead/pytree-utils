@@ -1,7 +1,11 @@
+[build-system]
+requires = ["uv_build>=0.7"]
+build-backend = "uv_build"
+
 [project]
 name = "pytree-utils"
 version = "0.1.0"
-description = "Add your description here"
+description = "Nested struct-of-arrays helpers for JAX using equinox"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -12,4 +16,10 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ipython>=9.11.0",
+    "pytest>=8.0",
 ]
+
+[tool.uv.sources]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
