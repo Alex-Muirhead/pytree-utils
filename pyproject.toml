@@ -16,10 +16,74 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ipython>=9.11.0",
+    "pylint>=4.0.5",
     "pytest>=8.0",
+    "ruff>=0.15.11",
 ]
 
 [tool.uv.sources]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# ---------------------------------------------------------------------------
+# Ruff
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+src = ["src"]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "SIM108",  # ternary operator – sometimes less readable
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pytree_utils"]
+
+# ---------------------------------------------------------------------------
+# Pylint  (semantic checks not covered by ruff)
+# ---------------------------------------------------------------------------
+
+[tool.pylint.main]
+source-roots = ["src"]
+
+[tool.pylint.format]
+max-line-length = 88  # match ruff
+
+[tool.pylint."messages control"]
+disable = [
+    # ---- duplicate coverage: ruff handles these ----
+    "C0301",  # line-too-long
+    "C0303",  # trailing-whitespace
+    "C0304",  # missing-final-newline
+    "C0321",  # multiple-statements
+    "C0410",  # multiple-imports
+    "C0411",  # wrong-import-order
+    "C0412",  # ungrouped-imports
+    "C0413",  # wrong-import-position
+    "W0611",  # unused-import
+    # ---- false positives for this codebase ----
+    # dc.field() used legitimately inside dc.make_dataclass() field lists
+    "E3701",  # invalid-field-call
+    # Dynamic attributes added to generated blueprint classes at runtime
+    "E1101",  # no-member
+    # Private members accessed within the same module intentionally
+    "W0212",  # protected-access
+    # Data-container classes intentionally expose few public methods
+    "R0903",  # too-few-public-methods
+    # PEP 695 type-parameter bounds are evaluated lazily; pylint doesn't know this
+    "E0601",  # used-before-assignment
+]

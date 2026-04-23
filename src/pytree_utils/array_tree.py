@@ -1,150 +1,23 @@
+"""Blueprint machinery, index helpers, and the ArrayTree base class."""
+
 from __future__ import annotations
 
 import dataclasses as dc
 import functools
 import typing
-from typing import Any, Callable, ClassVar, Self
+from typing import Any, ClassVar, Self
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-ShapeType = tuple[int, ...]
-InitFn = Callable[[ShapeType, Any], jax.Array]
-
-
-# ---------------------------------------------------------------------------
-# LeafSpec — describes one array leaf in a Blueprint
-# ---------------------------------------------------------------------------
-
-
-@dc.dataclass(frozen=True)
-class LeafSpec:
-    """Shape/dtype specification for an array leaf.
-
-    Lives inside a ``Blueprint`` (Stage 2) and is replaced by a real
-    ``jax.Array`` when the Blueprint is built (Stage 3).
-    """
-
-    shape: ShapeType
-    dtype: Any = float
-
-
-# ---------------------------------------------------------------------------
-# Field helpers
-# ---------------------------------------------------------------------------
-
-
-def leaf(shape: ShapeType = (), dtype: Any = float, **kwargs) -> dc.Field:
-    """Declare an array leaf field with shape and dtype (Stage 1).
-
-    Usage::
-
-        class MyNode(ArrayTree):
-            x: jax.Array = leaf(shape=(3,))
-            y: jax.Array = leaf(shape=(4,), dtype=jnp.float16)
-    """
-    metadata = dict(kwargs.pop("metadata", None) or {})
-    if "leaf_spec" in metadata:
-        raise ValueError("leaf_spec multiply defined in metadata")
-    metadata["leaf_spec"] = LeafSpec(shape=shape, dtype=dtype)
-    return dc.field(**kwargs, metadata=metadata)
-
-
-def node(shape: ShapeType = (), **kwargs) -> dc.Field:
-    """Declare a child node field and specify its shape (Stage 1).
-
-    The *shape* is used when the parent's ``Blueprint`` is constructed,
-    so the node class itself needs no hard-coded shape::
-
-        class Vel(ArrayTree):
-            vx: jax.Array = leaf(shape=(1,))
-            vy: jax.Array = leaf(shape=(2,))
-
-        class World(ArrayTree):
-            vel: Vel = node(shape=(3,))
-
-        proto = World.blueprint(shape=(2,))
-        # proto.shape == (2,), proto.vel.shape == (3,)
-    """
-    metadata = dict(kwargs.pop("metadata", None) or {})
-    if "node_shape" in metadata:
-        raise ValueError("node_shape multiply defined in metadata")
-    metadata["node_shape"] = shape
-    return dc.field(**kwargs, metadata=metadata)
-
-
-def _field_default(field: dc.Field, *, throw: bool = True) -> Any:
-    """Return the default value for a dataclass field."""
-    if field.default is not dc.MISSING:
-        return field.default
-    if field.default_factory is not dc.MISSING:
-        return field.default_factory()
-    if throw:
-        raise ValueError(f"Field '{field.name}' has no default value or factory")
-    return None
-
-
-def _count_index_dims(idx: tuple) -> int:
-    """Count how many existing dimensions are addressed by an index tuple.
-
-    Each element other than ``None`` / ``numpy.newaxis`` addresses one
-    dimension.
-    """
-    return sum(i is not None for i in idx)
-
-
-# ---------------------------------------------------------------------------
-# Index helpers  (.at[idx].get() / .at[idx].set())
-# ---------------------------------------------------------------------------
-
-
-@dc.dataclass(frozen=True)
-class _IndexedHelper:
-    """Returned by ``ArrayTree.at[idx]``; provides ``.get()`` and ``.set()``."""
-
-    _node: ArrayTree
-    _idx: tuple
-
-    def get(self) -> ArrayTree:
-        """Return a new node with ``idx`` applied to all leaf arrays."""
-        full_prefix = self._node._prefix + self._node.shape
-        remaining = full_prefix[_count_index_dims(self._idx) :]
-        return self._node._reindex(self._idx, new_prefix=(), new_shape=remaining)
-
-    def set(self, values: Any) -> ArrayTree:
-        """Return a copy of the node with indexed leaves updated from *values*.
-
-        *values* is broadcast to the node's structure via ``jax.tree.broadcast``:
-        a scalar fills every leaf; a same-structure ``ArrayTree`` sets each leaf
-        from the corresponding leaf in *values*.
-        """
-        idx = self._idx
-        values_tree = jax.tree.broadcast(values, self._node)
-        return jax.tree.map(lambda arr, v: arr.at[idx].set(v), self._node, values_tree)
-
-
-@dc.dataclass(frozen=True)
-class _IndexHelper:
-    """Returned by ``ArrayTree.at``; validates the index and captures it."""
-
-    _node: ArrayTree
-
-    def __getitem__(self, idx: Any) -> _IndexedHelper:
-        if not isinstance(idx, tuple):
-            idx = (idx,)
-
-        full_prefix = self._node._prefix + self._node.shape
-        n = _count_index_dims(idx)
-
-        if n > len(full_prefix):
-            raise IndexError(
-                f"{type(self._node).__name__} has a {len(full_prefix)}-dimensional "
-                f"prefix {full_prefix}; cannot index with {n} dimension(s)"
-            )
-
-        return _IndexedHelper(self._node, idx)
-
+from pytree_utils._spec import (
+    InitFn,
+    LeafSpec,
+    ShapeType,
+    _count_index_dims,
+    _field_default,
+)
 
 # ---------------------------------------------------------------------------
 # Blueprint — mutable Stage-2 structure
@@ -154,9 +27,9 @@ class _IndexHelper:
 class _BlueprintBase[T: ArrayTree]:
     """Base for all generated Blueprint types.
 
-    Blueprints are plain mutable Python objects (not JAX pytrees).  They
+    Blueprints are plain mutable Python objects (not JAX pytrees). They
     describe the shape/dtype structure of an ``ArrayTree`` before any arrays
-    are allocated.  Mutate fields directly, then call ``.zeros()`` or
+    are allocated. Mutate fields directly, then call ``.zeros()`` or
     ``.ones()`` to produce a fully instantiated ``ArrayTree``.
     """
 
@@ -174,8 +47,11 @@ class _BlueprintBase[T: ArrayTree]:
                      ``jnp.zeros``.
         """
         cls = self._array_tree_cls
-        accumulated = prefix + self.shape
-        kwargs: dict[str, Any] = {"shape": self.shape, "_prefix": prefix}
+        accumulated = prefix + self.shape  # type: ignore[attr-defined]
+        kwargs: dict[str, Any] = {
+            "shape": self.shape,  # type: ignore[attr-defined]
+            "_prefix": prefix,
+        }
 
         for f in dc.fields(cls):
             if not f.init or f.name in ("shape", "_prefix"):
@@ -203,11 +79,26 @@ class _BlueprintBase[T: ArrayTree]:
         return self.build(prefix=prefix, init_fn=jnp.ones)
 
 
-def _get_blueprint_cls(array_tree_cls: type) -> type:
-    """Return (creating if necessary) the Blueprint class for an ArrayTree subclass."""
-    if "_blueprint_cls" not in array_tree_cls.__dict__:
-        array_tree_cls._blueprint_cls = _make_blueprint_cls(array_tree_cls, {})
-    return array_tree_cls._blueprint_cls
+# ---------------------------------------------------------------------------
+# Parameterized generic support  (Container[Vel].blueprint(...))
+# ---------------------------------------------------------------------------
+
+
+@dc.dataclass(frozen=True)
+class _ParameterizedTree:
+    """Returned by ``GenericArrayTree[ConcreteType]``; provides ``.blueprint()``."""
+
+    cls: type
+    type_map: dict
+
+    def blueprint(self, shape: ShapeType = ()) -> _BlueprintBase:
+        """Create a Blueprint with TypeVars resolved to their concrete types."""
+        return _make_blueprint_cls(self.cls, self.type_map)(shape=shape)
+
+
+# ---------------------------------------------------------------------------
+# Blueprint class factory
+# ---------------------------------------------------------------------------
 
 
 def _resolve_hint(hint: Any, type_map: dict) -> Any:
@@ -215,6 +106,13 @@ def _resolve_hint(hint: Any, type_map: dict) -> Any:
     if isinstance(hint, typing.TypeVar):
         return type_map.get(hint, hint)
     return hint
+
+
+def _get_blueprint_cls(array_tree_cls: type) -> type:
+    """Return (creating if necessary) the Blueprint class for an ArrayTree subclass."""
+    if "_blueprint_cls" not in array_tree_cls.__dict__:
+        array_tree_cls._blueprint_cls = _make_blueprint_cls(array_tree_cls, {})  # type: ignore[attr-defined]
+    return array_tree_cls._blueprint_cls  # type: ignore[attr-defined]
 
 
 def _make_blueprint_cls(array_tree_cls: type, type_map: dict) -> type:
@@ -234,20 +132,22 @@ def _make_blueprint_cls(array_tree_cls: type, type_map: dict) -> type:
 
         if "leaf_spec" in f.metadata:
             fields.append((f.name, LeafSpec, dc.field(default=f.metadata["leaf_spec"])))
+            continue
+
+        hint = _resolve_hint(hints.get(f.name), type_map)
+        node_shape = f.metadata.get("node_shape", ())
+
+        if isinstance(hint, _ParameterizedTree):
+            # e.g. field: Container[Pos] — annotation resolved to a _ParameterizedTree
+            child_bp_cls = _make_blueprint_cls(hint.cls, hint.type_map)
+            factory = functools.partial(child_bp_cls, shape=node_shape)
+            fields.append((f.name, child_bp_cls, dc.field(default_factory=factory)))
         else:
-            hint = _resolve_hint(hints.get(f.name), type_map)
-            node_shape = f.metadata.get("node_shape", ())
-            if isinstance(hint, _ParameterizedTree):
-                # e.g. field: Container[Pos] — annotation resolved to a _ParameterizedTree
-                child_bp_cls = _make_blueprint_cls(hint._cls, hint._type_map)
+            origin: Any = typing.get_origin(hint) or hint
+            if isinstance(origin, type) and issubclass(origin, ArrayTree):
+                child_bp_cls = _get_blueprint_cls(origin)
                 factory = functools.partial(child_bp_cls, shape=node_shape)
                 fields.append((f.name, child_bp_cls, dc.field(default_factory=factory)))
-            else:
-                origin: Any = typing.get_origin(hint) or hint
-                if isinstance(origin, type) and issubclass(origin, ArrayTree):
-                    child_bp_cls = _get_blueprint_cls(origin)
-                    factory = functools.partial(child_bp_cls, shape=node_shape)
-                    fields.append((f.name, child_bp_cls, dc.field(default_factory=factory)))
 
     blueprint_cls = dc.make_dataclass(
         f"{array_tree_cls.__name__}Blueprint",
@@ -255,25 +155,60 @@ def _make_blueprint_cls(array_tree_cls: type, type_map: dict) -> type:
         bases=(_BlueprintBase[array_tree_cls],),
         slots=True,
     )
-    blueprint_cls._array_tree_cls = array_tree_cls
+    blueprint_cls._array_tree_cls = array_tree_cls  # type: ignore[attr-defined]
     return blueprint_cls
 
 
 # ---------------------------------------------------------------------------
-# Parameterized generic support  (Container[Vel].blueprint(...))
+# Index helpers  (.at[idx].get() / .at[idx].set())
 # ---------------------------------------------------------------------------
 
 
 @dc.dataclass(frozen=True)
-class _ParameterizedTree:
-    """Returned by ``GenericArrayTree[ConcreteType]``; provides ``.blueprint()``."""
+class _IndexedHelper:
+    """Returned by ``ArrayTree.at[idx]``; provides ``.get()`` and ``.set()``."""
 
-    _cls: type
-    _type_map: dict
+    node: ArrayTree
+    idx: tuple
 
-    def blueprint(self, shape: ShapeType = ()) -> _BlueprintBase:
-        """Create a Blueprint with TypeVars resolved to their concrete types."""
-        return _make_blueprint_cls(self._cls, self._type_map)(shape=shape)
+    def get(self) -> ArrayTree:
+        """Return a new node with ``idx`` applied to all leaf arrays."""
+        full_prefix = self.node._prefix + self.node.shape
+        remaining = full_prefix[_count_index_dims(self.idx) :]
+        return self.node._reindex(self.idx, new_prefix=(), new_shape=remaining)
+
+    def set(self, values: Any) -> ArrayTree:
+        """Return a copy of the node with indexed leaves updated from *values*.
+
+        *values* is broadcast to the node's structure via ``jax.tree.broadcast``:
+        a scalar fills every leaf; a same-structure ``ArrayTree`` sets each leaf
+        from the corresponding leaf in *values*.
+        """
+        idx = self.idx
+        values_tree = jax.tree.broadcast(values, self.node)
+        return jax.tree.map(lambda arr, v: arr.at[idx].set(v), self.node, values_tree)
+
+
+@dc.dataclass(frozen=True)
+class _IndexHelper:
+    """Returned by ``ArrayTree.at``; validates the index and captures it."""
+
+    node: ArrayTree
+
+    def __getitem__(self, idx: Any) -> _IndexedHelper:
+        if not isinstance(idx, tuple):
+            idx = (idx,)
+
+        full_prefix = self.node._prefix + self.node.shape
+        n = _count_index_dims(idx)
+
+        if n > len(full_prefix):
+            raise IndexError(
+                f"{type(self.node).__name__} has a {len(full_prefix)}-dimensional "
+                f"prefix {full_prefix}; cannot index with {n} dimension(s)"
+            )
+
+        return _IndexedHelper(self.node, idx)
 
 
 # ---------------------------------------------------------------------------
@@ -285,12 +220,12 @@ class ArrayTree(eqx.Module):
     """Base class for instantiated array structures (Stage 3).
 
     ``ArrayTree`` instances are immutable equinox modules and valid JAX
-    pytrees.  They are produced exclusively by building a ``Blueprint``
+    pytrees. They are produced exclusively by building a ``Blueprint``
     (Stage 2):
 
-    **Stage 1 – Definition**
+    **Stage 1 - Definition**
     Subclass ``ArrayTree`` and declare array leaves with ``leaf()`` and child
-    nodes with ``node(shape=...)``.  Every node's nominal shape is ``()``
+    nodes with ``node(shape=...)``. Every node's nominal shape is ``()``
     unless given by its parent::
 
         class Vel(ArrayTree):
@@ -300,7 +235,7 @@ class ArrayTree(eqx.Module):
         class World(ArrayTree):
             vel: Vel = node(shape=(3,))
 
-    **Stage 2 – Blueprint (mutable)**
+    **Stage 2 - Blueprint (mutable)**
     Call ``cls.blueprint(shape=...)`` to get a mutable ``Blueprint`` whose
     fields can be edited freely before any arrays are allocated::
 
@@ -308,7 +243,7 @@ class ArrayTree(eqx.Module):
         proto.vel.shape = (4,)            # direct mutation
         proto.vel = Vel.blueprint(shape=(5,))  # swap child
 
-    **Stage 3 – Instantiation (immutable pytree)**
+    **Stage 3 - Instantiation (immutable pytree)**
     Call ``.zeros()``, ``.ones()``, or ``.build(init_fn=...)`` on the
     blueprint to produce a real ``ArrayTree``::
 
@@ -317,7 +252,7 @@ class ArrayTree(eqx.Module):
 
     **Indexing**
     Use ``.at[idx].get()`` / ``.at[idx].set(values)`` to index into the
-    accumulated prefix.  Indices that reach into leaf-specific dimensions
+    accumulated prefix. Indices that reach into leaf-specific dimensions
     are rejected::
 
         world.at[0].get()           # ok — World prefix is 1-dim
@@ -335,27 +270,21 @@ class ArrayTree(eqx.Module):
             params = (params,)
         type_params = getattr(cls, "__type_params__", ())
         if not type_params:
-            return super().__class_getitem__(params if len(params) > 1 else params[0])
-        type_map = dict(zip(type_params, params))
-        return _ParameterizedTree(cls, type_map)
+            return super().__class_getitem__(params if len(params) > 1 else params[0])  # type: ignore[misc]
+        return _ParameterizedTree(cls, dict(zip(type_params, params, strict=False)))
 
     @classmethod
     def blueprint(cls, shape: ShapeType = ()) -> _BlueprintBase[Self]:
         """Create a mutable Blueprint for this node type (Stage 2)."""
         return _get_blueprint_cls(cls)(shape=shape)
 
-    # ------------------------------------------------------------------
-    # Indexing
-    # ------------------------------------------------------------------
-
     @property
     def at(self) -> _IndexHelper:
-        """Entry point for prefix-validated indexing: ``node.at[i].get()`` / ``.set(v)``."""
-        return _IndexHelper(self)
+        """Entry point for prefix-validated indexing.
 
-    # ------------------------------------------------------------------
-    # Utilities (Stage 3 only — leaves must be real jax.Arrays)
-    # ------------------------------------------------------------------
+        Use ``node.at[i].get()`` or ``node.at[i].set(v)``.
+        """
+        return _IndexHelper(self)
 
     def zeros_like(self) -> Self:
         """Return a copy with all arrays replaced by zeros of the same shape."""
@@ -368,10 +297,6 @@ class ArrayTree(eqx.Module):
     def empty_like(self) -> Self:
         """Return a copy with all arrays replaced by uninitialised arrays."""
         return jax.tree.map(jnp.empty_like, self)
-
-    # ------------------------------------------------------------------
-    # Private helpers for .at indexing
-    # ------------------------------------------------------------------
 
     def _reindex(self, idx: tuple, new_prefix: ShapeType, new_shape: ShapeType) -> Self:
         """Apply *idx* to all leaf arrays and update prefix/shape metadata."""
