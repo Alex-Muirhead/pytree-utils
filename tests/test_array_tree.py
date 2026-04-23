@@ -1,6 +1,5 @@
 import pytest
 import jax
-import jax.numpy as jnp
 
 from pytree_utils import ArrayTree, leaf, node
 
@@ -67,3 +66,57 @@ def test_zeros_like_ones_like(world):
     assert float(z.vel.vx[0, 0, 0]) == 0.0
     o = world.ones_like()
     assert float(o.vel.vx[0, 0, 0]) == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Generic ArrayTree tests
+# ---------------------------------------------------------------------------
+
+
+class Pos(ArrayTree):
+    x: jax.Array = leaf(shape=(3,))
+
+
+class Container[T: ArrayTree](ArrayTree):
+    child: T = node(shape=(5,))
+
+
+class Wrapper(ArrayTree):
+    one: Container[Pos] = node(shape=(1,))
+    two: Container[Vel] = node(shape=(2,))
+
+
+def test_generic_blueprint_uses_concrete_type():
+    bp = Container[Vel].blueprint(shape=(2,))
+    # child should be a VelBlueprint with node_shape default (5,)
+    from pytree_utils.array_tree import _BlueprintBase
+
+    assert isinstance(bp.child, _BlueprintBase)
+    assert bp.child.shape == (5,)
+
+
+def test_generic_leaf_shapes():
+    w = Container[Vel].blueprint(shape=(2,)).zeros()
+    assert w.child.vx.shape == (2, 5, 1)
+    assert w.child.vy.shape == (2, 5, 2)
+
+
+def test_generic_different_concrete_types():
+    wp = Container[Pos].blueprint(shape=(2,)).zeros()
+    assert wp.child.x.shape == (2, 5, 3)
+
+
+def test_generic_blueprint_mutation():
+    bp = Container[Vel].blueprint(shape=(2,))
+    bp.child.shape = (7,)
+    w = bp.zeros()
+    assert w.child.vx.shape == (2, 7, 1)
+
+
+def test_generic_children():
+    bp = Wrapper.blueprint(shape=(3,))
+    w = bp.zeros()
+    assert hasattr(w.one.child, "x")
+    assert hasattr(w.two.child, "vx")
+    assert w.one.child.x.shape == (3, 1, 5, 3)
+    assert w.two.child.vx.shape == (3, 2, 5, 1)

@@ -206,12 +206,23 @@ class _BlueprintBase[T: ArrayTree]:
 def _get_blueprint_cls(array_tree_cls: type) -> type:
     """Return (creating if necessary) the Blueprint class for an ArrayTree subclass."""
     if "_blueprint_cls" not in array_tree_cls.__dict__:
-        array_tree_cls._blueprint_cls = _make_blueprint_cls(array_tree_cls)
+        array_tree_cls._blueprint_cls = _make_blueprint_cls(array_tree_cls, {})
     return array_tree_cls._blueprint_cls
 
 
-def _make_blueprint_cls(array_tree_cls: type) -> type:
-    """Dynamically generate a mutable Blueprint dataclass for *array_tree_cls*."""
+def _resolve_hint(hint: Any, type_map: dict) -> Any:
+    """Substitute a TypeVar with its concrete type if present in *type_map*."""
+    if isinstance(hint, typing.TypeVar):
+        return type_map.get(hint, hint)
+    return hint
+
+
+def _make_blueprint_cls(array_tree_cls: type, type_map: dict) -> type:
+    """Dynamically generate a mutable Blueprint dataclass for *array_tree_cls*.
+
+    *type_map* maps ``TypeVar`` objects to concrete ``ArrayTree`` subclasses,
+    used when the class is generic (e.g. ``Container[Vel]``).
+    """
     fields: list = [("shape", ShapeType, dc.field(default=()))]
     hints = typing.get_type_hints(array_tree_cls)
 
@@ -224,13 +235,19 @@ def _make_blueprint_cls(array_tree_cls: type) -> type:
         if "leaf_spec" in f.metadata:
             fields.append((f.name, LeafSpec, dc.field(default=f.metadata["leaf_spec"])))
         else:
-            hint = hints.get(f.name)
-            origin: Any = typing.get_origin(hint) or hint
-            if isinstance(origin, type) and issubclass(origin, ArrayTree):
-                child_bp_cls = _get_blueprint_cls(origin)
-                node_shape = f.metadata.get("node_shape", ())
+            hint = _resolve_hint(hints.get(f.name), type_map)
+            node_shape = f.metadata.get("node_shape", ())
+            if isinstance(hint, _ParameterizedTree):
+                # e.g. field: Container[Pos] — annotation resolved to a _ParameterizedTree
+                child_bp_cls = _make_blueprint_cls(hint._cls, hint._type_map)
                 factory = functools.partial(child_bp_cls, shape=node_shape)
                 fields.append((f.name, child_bp_cls, dc.field(default_factory=factory)))
+            else:
+                origin: Any = typing.get_origin(hint) or hint
+                if isinstance(origin, type) and issubclass(origin, ArrayTree):
+                    child_bp_cls = _get_blueprint_cls(origin)
+                    factory = functools.partial(child_bp_cls, shape=node_shape)
+                    fields.append((f.name, child_bp_cls, dc.field(default_factory=factory)))
 
     blueprint_cls = dc.make_dataclass(
         f"{array_tree_cls.__name__}Blueprint",
@@ -240,6 +257,23 @@ def _make_blueprint_cls(array_tree_cls: type) -> type:
     )
     blueprint_cls._array_tree_cls = array_tree_cls
     return blueprint_cls
+
+
+# ---------------------------------------------------------------------------
+# Parameterized generic support  (Container[Vel].blueprint(...))
+# ---------------------------------------------------------------------------
+
+
+@dc.dataclass(frozen=True)
+class _ParameterizedTree:
+    """Returned by ``GenericArrayTree[ConcreteType]``; provides ``.blueprint()``."""
+
+    _cls: type
+    _type_map: dict
+
+    def blueprint(self, shape: ShapeType = ()) -> _BlueprintBase:
+        """Create a Blueprint with TypeVars resolved to their concrete types."""
+        return _make_blueprint_cls(self._cls, self._type_map)(shape=shape)
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +329,17 @@ class ArrayTree(eqx.Module):
     _prefix: ShapeType = eqx.field(static=True, kw_only=True, default=(), repr=False)
 
     @classmethod
+    def __class_getitem__(cls, params: Any) -> _ParameterizedTree:
+        """Support ``GenericNode[ConcreteType].blueprint(...)`` syntax."""
+        if not isinstance(params, tuple):
+            params = (params,)
+        type_params = getattr(cls, "__type_params__", ())
+        if not type_params:
+            return super().__class_getitem__(params if len(params) > 1 else params[0])
+        type_map = dict(zip(type_params, params))
+        return _ParameterizedTree(cls, type_map)
+
+    @classmethod
     def blueprint(cls, shape: ShapeType = ()) -> _BlueprintBase[Self]:
         """Create a mutable Blueprint for this node type (Stage 2)."""
         return _get_blueprint_cls(cls)(shape=shape)
@@ -348,5 +393,3 @@ class ArrayTree(eqx.Module):
                 kwargs[f.name] = val
 
         return type(self)(**kwargs)
-
-
