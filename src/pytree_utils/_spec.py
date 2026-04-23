@@ -9,7 +9,13 @@ from typing import Any
 import jax
 
 ShapeType = tuple[int, ...]
+ShapeInput = int | ShapeType
 InitFn = Callable[[ShapeType, Any], jax.Array]
+
+
+def _to_shape(s: ShapeInput) -> ShapeType:
+    """Normalise a shape input: wrap a bare ``int`` into a 1-tuple."""
+    return (s,) if isinstance(s, int) else s
 
 
 @dc.dataclass(frozen=True)
@@ -24,7 +30,7 @@ class LeafSpec:
     dtype: Any = float
 
 
-def leaf(shape: ShapeType = (), dtype: Any = float, **kwargs) -> dc.Field:
+def leaf(shape: ShapeInput = (), dtype: Any = float, **kwargs) -> dc.Field:
     """Declare an array leaf field with shape and dtype (Stage 1).
 
     Usage::
@@ -36,11 +42,11 @@ def leaf(shape: ShapeType = (), dtype: Any = float, **kwargs) -> dc.Field:
     metadata = dict(kwargs.pop("metadata", None) or {})
     if "leaf_spec" in metadata:
         raise ValueError("leaf_spec multiply defined in metadata")
-    metadata["leaf_spec"] = LeafSpec(shape=shape, dtype=dtype)
+    metadata["leaf_spec"] = LeafSpec(shape=_to_shape(shape), dtype=dtype)
     return dc.field(**kwargs, metadata=metadata)
 
 
-def node(shape: ShapeType = (), **kwargs) -> dc.Field:
+def node(shape: ShapeInput = (), **kwargs) -> dc.Field:
     """Declare a child node field and specify its shape (Stage 1).
 
     The *shape* is used when the parent's ``Blueprint`` is constructed,
@@ -59,7 +65,7 @@ def node(shape: ShapeType = (), **kwargs) -> dc.Field:
     metadata = dict(kwargs.pop("metadata", None) or {})
     if "node_shape" in metadata:
         raise ValueError("node_shape multiply defined in metadata")
-    metadata["node_shape"] = shape
+    metadata["node_shape"] = _to_shape(shape)
     return dc.field(**kwargs, metadata=metadata)
 
 

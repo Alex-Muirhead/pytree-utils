@@ -14,9 +14,11 @@ import jax.numpy as jnp
 from pytree_utils._spec import (
     InitFn,
     LeafSpec,
+    ShapeInput,
     ShapeType,
     _count_index_dims,
     _field_default,
+    _to_shape,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,7 +39,7 @@ class _BlueprintBase[T: ArrayTree]:
 
     _array_tree_cls: ClassVar[type]
 
-    def build(self, prefix: ShapeType = (), init_fn: InitFn = jnp.zeros) -> T:
+    def build(self, prefix: ShapeInput = (), init_fn: InitFn = jnp.zeros) -> T:
         """Instantiate arrays from this blueprint (Stage 3).
 
         Args:
@@ -47,6 +49,7 @@ class _BlueprintBase[T: ArrayTree]:
                      ``jnp.zeros``.
         """
         cls = self._array_tree_cls
+        prefix = _to_shape(prefix)
         accumulated = prefix + self.shape  # type: ignore[attr-defined]
         kwargs: dict[str, Any] = {
             "shape": self.shape,  # type: ignore[attr-defined]
@@ -70,11 +73,11 @@ class _BlueprintBase[T: ArrayTree]:
 
         return cls(**kwargs)
 
-    def zeros(self, prefix: ShapeType = ()) -> T:
+    def zeros(self, prefix: ShapeInput = ()) -> T:
         """Build with zero-filled arrays."""
         return self.build(prefix=prefix, init_fn=jnp.zeros)
 
-    def ones(self, prefix: ShapeType = ()) -> T:
+    def ones(self, prefix: ShapeInput = ()) -> T:
         """Build with one-filled arrays."""
         return self.build(prefix=prefix, init_fn=jnp.ones)
 
@@ -91,9 +94,9 @@ class _ParameterizedTree:
     cls: type
     type_map: dict
 
-    def blueprint(self, shape: ShapeType = ()) -> _BlueprintBase:
+    def blueprint(self, shape: ShapeInput = ()) -> _BlueprintBase:
         """Create a Blueprint with TypeVars resolved to their concrete types."""
-        return _make_blueprint_cls(self.cls, self.type_map)(shape=shape)
+        return _make_blueprint_cls(self.cls, self.type_map)(shape=_to_shape(shape))
 
 
 # ---------------------------------------------------------------------------
@@ -274,9 +277,9 @@ class ArrayTree(eqx.Module):
         return _ParameterizedTree(cls, dict(zip(type_params, params, strict=False)))
 
     @classmethod
-    def blueprint(cls, shape: ShapeType = ()) -> _BlueprintBase[Self]:
+    def blueprint(cls, shape: ShapeInput = ()) -> _BlueprintBase[Self]:
         """Create a mutable Blueprint for this node type (Stage 2)."""
-        return _get_blueprint_cls(cls)(shape=shape)
+        return _get_blueprint_cls(cls)(shape=_to_shape(shape))
 
     @property
     def at(self) -> _IndexHelper:

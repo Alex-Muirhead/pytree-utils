@@ -113,6 +113,17 @@ def test_generic_blueprint_mutation():
     assert w.child.vx.shape == (2, 7, 1)
 
 
+def test_shape_int_shorthand():
+    class Speed(ArrayTree):
+        v: jax.Array = leaf(shape=3)
+
+    class Track(ArrayTree):
+        s: Speed = node(shape=2)
+
+    w = Track.blueprint(shape=4).zeros()
+    assert w.s.v.shape == (4, 2, 3)
+
+
 def test_generic_children():
     bp = Wrapper.blueprint(shape=(3,))
     w = bp.zeros()
