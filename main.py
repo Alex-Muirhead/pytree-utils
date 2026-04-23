@@ -54,6 +54,30 @@ def leaf(shape: ShapeType = (), dtype: Any = float, **kwargs) -> dc.Field:
     return dc.field(**kwargs, metadata=metadata)
 
 
+def node(shape: ShapeType = (), **kwargs) -> dc.Field:
+    """Declare a child node field and specify its shape for default construction.
+
+    Mirrors ``leaf()`` but for ``ArrayTree`` children rather than array leaves.
+    The *shape* stored here is used by ``ArrayTree.default()`` when constructing
+    the child node, so the node class itself needs no hard-coded shape::
+
+        class Vel(ArrayTree):
+            vx: jax.Array = leaf(shape=(1,))
+            vy: jax.Array = leaf(shape=(2,))
+
+        class World(ArrayTree):
+            vel: Vel = node(shape=(3,))   # Vel gets shape (3,) in World.default()
+
+        proto = World.default(shape=(2,))
+        # proto.vel.shape == (3,), proto.shape == (2,)
+    """
+    metadata = dict(kwargs.pop("metadata", None) or {})
+    if "node_shape" in metadata:
+        raise ValueError("node_shape multiply defined in metadata")
+    metadata["node_shape"] = shape
+    return dc.field(**kwargs, metadata=metadata)
+
+
 def _field_default(field: dc.Field, *, throw: bool = True) -> Any:
     """Return the default value for a dataclass field."""
     if field.default is not dc.MISSING:
@@ -146,24 +170,24 @@ class ArrayTree(eqx.Module):
     Construction happens in three stages:
 
     **Stage 1 – Definition**
-    Subclass ArrayTree and declare fields with ``leaf()`` for array leaves
-    and plain type annotations for child nodes::
+    Subclass ArrayTree and declare array leaves with ``leaf()`` and child
+    nodes with ``node(shape=...)``.  Every node's nominal shape is ``()``
+    unless given by its parent — no per-class shape override is needed::
 
         class Vel(ArrayTree):
-            shape: ShapeType = eqx.field(static=True, kw_only=True, default=(3,))
             vx: jax.Array = leaf(shape=(1,))
             vy: jax.Array = leaf(shape=(2,))
 
         class World(ArrayTree):
-            shape: ShapeType = eqx.field(static=True, kw_only=True, default=(2,))
-            vel: Vel
+            vel: Vel = node(shape=(3,))   # Vel gets shape (3,) when World is built
 
     **Stage 2 – Assembly**
-    Call ``cls.default()`` to get a prototype tree where every array leaf is
-    a ``LeafSpec`` (not a real array).  The prototype is a fully valid
-    equinox module that can be inspected and modified::
+    Call ``cls.default(shape=...)`` to get a prototype tree where every array
+    leaf is a ``LeafSpec`` (not a real array).  The root's shape is given to
+    ``default()``; each child node's shape comes from its ``node()``
+    declaration.  The prototype can be inspected and modified::
 
-        proto = World.default()
+        proto = World.default(shape=(2,))
         proto = eqx.tree_at(lambda t: t.vel, proto, proto.vel.with_shape((5,)))
 
     **Stage 3 – Instantiation**
@@ -209,15 +233,18 @@ class ArrayTree(eqx.Module):
     # ------------------------------------------------------------------
 
     @classmethod
-    def default(cls) -> Self:
+    def default(cls, shape: ShapeType = ()) -> Self:
         """Build a prototype tree (Stage 2).
 
-        * Static fields (including ``shape`` and ``_prefix``) are filled with
-          their declared defaults.
+        Args:
+            shape: The shape for this node.  Child node shapes come from
+                   their ``node(shape=...)`` field declarations.
+
+        * ``shape`` is used for this node; ``_prefix`` is left at ``()``.
         * Fields declared with ``leaf()`` become ``LeafSpec`` objects.
-        * Fields whose type hint resolves to an ``ArrayTree`` subclass are
-          populated by recursively calling ``SubClass.default()``, unless
-          the field already has an explicit default/factory.
+        * Fields declared with ``node(shape=s)`` are auto-constructed by
+          calling ``ChildClass.default(shape=s)``.
+        * Fields with an explicit default/factory use that instead.
 
         Raises ``ValueError`` if a required field has no default and its
         type cannot be automatically constructed.
@@ -229,7 +256,12 @@ class ArrayTree(eqx.Module):
             if not f.init:
                 continue
 
-            # Static fields (shape, _prefix, …) — use declared default
+            # This node's own shape — set from argument, not the field default
+            if f.name == "shape":
+                kwargs["shape"] = shape
+                continue
+
+            # Other static fields (_prefix, …) — use declared default
             if f.metadata.get("static", False):
                 kwargs[f.name] = _field_default(f)
                 continue
@@ -243,9 +275,12 @@ class ArrayTree(eqx.Module):
             hint = hints.get(f.name)
             origin: Any = typing.get_origin(hint) or hint
             if isinstance(origin, type) and issubclass(origin, ArrayTree):
-                # Prefer an explicit default/factory over auto-construction
                 explicit = _field_default(f, throw=False)
-                kwargs[f.name] = explicit if explicit is not None else origin.default()
+                if explicit is not None:
+                    kwargs[f.name] = explicit
+                else:
+                    child_shape = f.metadata.get("node_shape", ())
+                    kwargs[f.name] = origin.default(shape=child_shape)
             else:
                 kwargs[f.name] = _field_default(f)
 
@@ -377,24 +412,22 @@ class ArrayTree(eqx.Module):
 
 
 class Vel(ArrayTree):
-    shape: ShapeType = eqx.field(static=True, kw_only=True, default=(3,))
     vx: jax.Array = leaf(shape=(1,))
     vy: jax.Array = leaf(shape=(2,))
 
 
 class World(ArrayTree):
-    shape: ShapeType = eqx.field(static=True, kw_only=True, default=(2,))
-    vel: Vel
+    vel: Vel = node(shape=(3,))
 
 
 if __name__ == "__main__":
-    # Stage 2: build prototype
-    proto = World.default()
+    # Stage 2: build prototype — World's shape given here, Vel's shape from node()
+    proto = World.default(shape=(2,))
     print("Stage 2 – prototype:")
     print(proto)
 
-    # Optional Stage 2 edit: swap a child node with a different shape.
-    proto: World = eqx.tree_at(lambda t: t.vel, proto, proto.vel.with_shape((4,)))
+    # Optional Stage 2 edit: override a child's shape
+    proto = eqx.tree_at(lambda t: t.vel, proto, proto.vel.with_shape((4,)))
 
     # Stage 3: instantiate
     world = proto.zeros()
