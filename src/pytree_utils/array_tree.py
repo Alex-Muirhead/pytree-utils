@@ -11,6 +11,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from pytree_utils._ops import _ArrayTreeOps
 from pytree_utils._spec import (
     InitFn,
     LeafSpec,
@@ -39,7 +40,7 @@ class _BlueprintBase[T: ArrayTree]:
 
     _array_tree_cls: ClassVar[type]
 
-    def build(self, prefix: ShapeInput = (), init_fn: InitFn = jnp.zeros) -> T:
+    def _build(self, prefix: ShapeInput = (), init_fn: InitFn = jnp.zeros) -> T:
         """Instantiate arrays from this blueprint (Stage 3).
 
         Args:
@@ -65,9 +66,9 @@ class _BlueprintBase[T: ArrayTree]:
 
             val = getattr(self, f.name)
             if isinstance(val, LeafSpec):
-                kwargs[f.name] = init_fn(accumulated + val.shape, val.dtype)
+                kwargs[f.name] = init_fn(accumulated + val.shape, dtype=val.dtype)
             elif isinstance(val, _BlueprintBase):
-                kwargs[f.name] = val.build(prefix=accumulated, init_fn=init_fn)
+                kwargs[f.name] = val._build(prefix=accumulated, init_fn=init_fn)
             else:
                 kwargs[f.name] = val
 
@@ -75,11 +76,20 @@ class _BlueprintBase[T: ArrayTree]:
 
     def zeros(self, prefix: ShapeInput = ()) -> T:
         """Build with zero-filled arrays."""
-        return self.build(prefix=prefix, init_fn=jnp.zeros)
+        return self._build(prefix=prefix, init_fn=jnp.zeros)
 
     def ones(self, prefix: ShapeInput = ()) -> T:
         """Build with one-filled arrays."""
-        return self.build(prefix=prefix, init_fn=jnp.ones)
+        return self._build(prefix=prefix, init_fn=jnp.ones)
+
+    def full(self, fill_value: Any, prefix: ShapeInput = ()) -> T:
+        """Build with value-filled arrays."""
+        init_fn = functools.partial(jnp.full, fill_value=fill_value)
+        return self._build(prefix=prefix, init_fn=init_fn)
+
+    def empty(self, prefix: ShapeInput = ()) -> T:
+        """Build with empty arrays."""
+        return self._build(prefix=prefix, init_fn=jnp.empty)
 
 
 # ---------------------------------------------------------------------------
@@ -168,19 +178,19 @@ def _make_blueprint_cls(array_tree_cls: type, type_map: dict) -> type:
 
 
 @dc.dataclass(frozen=True)
-class _IndexedHelper:
+class _IndexedHelper[T: ArrayTree]:
     """Returned by ``ArrayTree.at[idx]``; provides ``.get()`` and ``.set()``."""
 
-    node: ArrayTree
+    node: T
     idx: tuple
 
-    def get(self) -> ArrayTree:
+    def get(self) -> T:
         """Return a new node with ``idx`` applied to all leaf arrays."""
         full_prefix = self.node._prefix + self.node.shape
         remaining = full_prefix[_count_index_dims(self.idx) :]
         return self.node._reindex(self.idx, new_prefix=(), new_shape=remaining)
 
-    def set(self, values: Any) -> ArrayTree:
+    def set(self, values: Any) -> T:
         """Return a copy of the node with indexed leaves updated from *values*.
 
         *values* is broadcast to the node's structure via ``jax.tree.broadcast``:
@@ -193,12 +203,12 @@ class _IndexedHelper:
 
 
 @dc.dataclass(frozen=True)
-class _IndexHelper:
+class _IndexHelper[T: ArrayTree]:
     """Returned by ``ArrayTree.at``; validates the index and captures it."""
 
-    node: ArrayTree
+    node: T
 
-    def __getitem__(self, idx: Any) -> _IndexedHelper:
+    def __getitem__(self, idx: Any) -> _IndexedHelper[T]:
         if not isinstance(idx, tuple):
             idx = (idx,)
 
@@ -219,7 +229,7 @@ class _IndexHelper:
 # ---------------------------------------------------------------------------
 
 
-class ArrayTree(eqx.Module):
+class ArrayTree(_ArrayTreeOps, eqx.Module):
     """Base class for instantiated array structures (Stage 3).
 
     ``ArrayTree`` instances are immutable equinox modules and valid JAX
@@ -247,8 +257,8 @@ class ArrayTree(eqx.Module):
         proto.vel = Vel.blueprint(shape=(5,))  # swap child
 
     **Stage 3 - Instantiation (immutable pytree)**
-    Call ``.zeros()``, ``.ones()``, or ``.build(init_fn=...)`` on the
-    blueprint to produce a real ``ArrayTree``::
+    Call ``.zeros()``, ``.ones()``, ``empty()``, or ``.full(fill_value=...)``
+    on the blueprint to produce a real ``ArrayTree``::
 
         world = proto.zeros()
         world.vel.vx.shape  # (2, 5, 1) — World(2) + Vel(5) + leaf(1)
@@ -266,6 +276,17 @@ class ArrayTree(eqx.Module):
     shape: ShapeType = eqx.field(static=True, kw_only=True, default=())
     _prefix: ShapeType = eqx.field(static=True, kw_only=True, default=(), repr=False)
 
+    def __check_init__(self):
+        """Validate the ArrayTree invariants."""
+        full_prefix = self._prefix + self.shape
+
+        for path, leaf in jax.tree.leaves_with_path(self):
+            if leaf.shape[: len(full_prefix)] != full_prefix:
+                msg = (
+                    "Bad leaf shape at self{}\nExpected shape prefixed with {}, got {}"
+                ).format(jax.tree_util.keystr(path), full_prefix, leaf.shape)
+                raise ValueError(msg)
+
     @classmethod
     def __class_getitem__(cls, params: Any) -> _ParameterizedTree:
         """Support ``GenericNode[ConcreteType].blueprint(...)`` syntax."""
@@ -282,7 +303,7 @@ class ArrayTree(eqx.Module):
         return _get_blueprint_cls(cls)(shape=_to_shape(shape))
 
     @property
-    def at(self) -> _IndexHelper:
+    def at(self) -> _IndexHelper[Self]:
         """Entry point for prefix-validated indexing.
 
         Use ``node.at[i].get()`` or ``node.at[i].set(v)``.
@@ -296,6 +317,11 @@ class ArrayTree(eqx.Module):
     def ones_like(self) -> Self:
         """Return a copy with all arrays replaced by ones of the same shape."""
         return jax.tree.map(jnp.ones_like, self)
+
+    def full_like(self, fill_value: Any) -> Self:
+        """Return a copy with all arrays replaced by fill_value of the same shape."""
+        init_fn = functools.partial(jnp.full_like, fill_value=fill_value)
+        return jax.tree.map(init_fn, self)
 
     def empty_like(self) -> Self:
         """Return a copy with all arrays replaced by uninitialised arrays."""
