@@ -14,35 +14,35 @@ class World(ArrayTree):
 
 
 @pytest.fixture
-def world():
+def world() -> World:
     proto = World.blueprint(shape=(2,))
     proto.vel.shape = (4,)
     return proto.zeros()
 
 
-def test_leaf_shapes(world):
+def test_leaf_shapes(world: World):
     assert world.vel.vx.shape == (2, 4, 1)
     assert world.vel.vy.shape == (2, 4, 2)
 
 
-def test_at_get_root(world):
+def test_at_get_root(world: World):
     s = world.at[0].get()
     assert s.vel.vx.shape == (4, 1)
     assert s.vel.vy.shape == (4, 2)
 
 
-def test_at_get_child(world):
+def test_at_get_child(world: World):
     s = world.vel.at[0, 3].get()
     assert s.vx.shape == (1,)
     assert s.vy.shape == (2,)
 
 
-def test_at_get_too_many_dims(world):
+def test_at_get_too_many_dims(world: World):
     with pytest.raises(IndexError):
         world.at[0, 1].get()
 
 
-def test_at_set_scalar(world):
+def test_at_set_scalar(world: World):
     world2 = world.at[0].set(1.0)
     assert float(world2.vel.vx[0, 0, 0]) == 1.0
     assert float(world2.vel.vx[1, 0, 0]) == 0.0
@@ -61,7 +61,7 @@ def test_blueprint_slots():
         proto.nonexistent = 42
 
 
-def test_zeros_like_ones_like(world):
+def test_zeros_like_ones_like(world: World):
     z = world.zeros_like()
     assert float(z.vel.vx[0, 0, 0]) == 0.0
     o = world.ones_like()
