@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses as dc
 import functools
 import typing
+from collections.abc import Callable
 from typing import Any, ClassVar, Self
 
 import equinox as eqx
@@ -173,33 +174,59 @@ def _make_blueprint_cls(array_tree_cls: type, type_map: dict) -> type:
 
 
 # ---------------------------------------------------------------------------
-# Index helpers  (.at[idx].get() / .at[idx].set())
+# Index helpers  (.at[idx] scatter/gather operations)
 # ---------------------------------------------------------------------------
 
 
 @dc.dataclass(frozen=True)
 class _IndexedHelper[T: ArrayTree]:
-    """Returned by ``ArrayTree.at[idx]``; provides ``.get()`` and ``.set()``."""
+    """Returned by ``ArrayTree.at[idx]``; mirrors JAX's scatter/gather API."""
 
     node: T
     idx: tuple
 
-    def get(self) -> T:
+    def _scatter(self, op: str, values: Any, **kwargs: Any) -> T:
+        """Broadcast *values* to the tree and apply ``arr.at[idx].<op>``."""
+        idx = self.idx
+        values_tree = jax.tree.broadcast(values, self.node)
+        return jax.tree.map(
+            lambda arr, v: getattr(arr.at[idx], op)(v, **kwargs),
+            self.node,
+            values_tree,
+        )
+
+    def get(self, **kwargs: Any) -> T:
         """Return a new node with ``idx`` applied to all leaf arrays."""
         full_prefix = self.node._prefix + self.node.shape
         remaining = full_prefix[_count_index_dims(self.idx) :]
-        return self.node._reindex(self.idx, new_prefix=(), new_shape=remaining)
+        return self.node._reindex(
+            self.idx, new_prefix=(), new_shape=remaining, get_kw=kwargs or None
+        )
 
-    def set(self, values: Any) -> T:
-        """Return a copy of the node with indexed leaves updated from *values*.
+    def set(self, values: Any, **kwargs: Any) -> T:
+        """Return a copy with indexed leaves replaced by *values*."""
+        return self._scatter("set", values, **kwargs)
 
-        *values* is broadcast to the node's structure via ``jax.tree.broadcast``:
-        a scalar fills every leaf; a same-structure ``ArrayTree`` sets each leaf
-        from the corresponding leaf in *values*.
-        """
+    def add(self, values: Any, **kwargs: Any) -> T:
+        """Return a copy with *values* added to the indexed leaves."""
+        return self._scatter("add", values, **kwargs)
+
+    def mul(self, values: Any, **kwargs: Any) -> T:
+        """Return a copy with indexed leaves multiplied by *values*."""
+        return self._scatter("mul", values, **kwargs)
+
+    def min(self, values: Any, **kwargs: Any) -> T:
+        """Return a copy with indexed leaves replaced by min(leaf, value)."""
+        return self._scatter("min", values, **kwargs)
+
+    def max(self, values: Any, **kwargs: Any) -> T:
+        """Return a copy with indexed leaves replaced by max(leaf, value)."""
+        return self._scatter("max", values, **kwargs)
+
+    def apply(self, func: Callable, **kwargs: Any) -> T:
+        """Return a copy with *func* applied to each indexed leaf slice."""
         idx = self.idx
-        values_tree = jax.tree.broadcast(values, self.node)
-        return jax.tree.map(lambda arr, v: arr.at[idx].set(v), self.node, values_tree)
+        return jax.tree.map(lambda arr: arr.at[idx].apply(func, **kwargs), self.node)
 
 
 @dc.dataclass(frozen=True)
@@ -282,10 +309,10 @@ class ArrayTree(_ArrayTreeOps, eqx.Module):
 
         for path, leaf in jax.tree.leaves_with_path(self):
             if leaf.shape[: len(full_prefix)] != full_prefix:
-                msg = (
-                    "Bad leaf shape at self{}\nExpected shape prefixed with {}, got {}"
-                ).format(jax.tree_util.keystr(path), full_prefix, leaf.shape)
-                raise ValueError(msg)
+                raise ValueError(
+                    f"Bad leaf shape at self{jax.tree_util.keystr(path)}\n"
+                    f"Expected shape prefixed with {full_prefix}, got {leaf.shape}"
+                )
 
     @classmethod
     def __class_getitem__(cls, params: Any) -> _ParameterizedTree:
@@ -327,23 +354,32 @@ class ArrayTree(_ArrayTreeOps, eqx.Module):
         """Return a copy with all arrays replaced by uninitialised arrays."""
         return jax.tree.map(jnp.empty_like, self)
 
-    def _reindex(self, idx: tuple, new_prefix: ShapeType, new_shape: ShapeType) -> Self:
+    def _reindex(
+        self,
+        idx: tuple,
+        new_prefix: ShapeType,
+        new_shape: ShapeType,
+        get_kw: dict | None = None,
+    ) -> Self:
         """Apply *idx* to all leaf arrays and update prefix/shape metadata."""
-        kwargs: dict[str, Any] = {"_prefix": new_prefix, "shape": new_shape}
+        init_kw: dict[str, Any] = {"_prefix": new_prefix, "shape": new_shape}
+        _gkw: dict[str, Any] = get_kw or {}
 
         for f in dc.fields(self):
             if not f.init or f.name in ("_prefix", "shape"):
                 continue
             if f.metadata.get("static", False):
-                kwargs[f.name] = getattr(self, f.name)
+                init_kw[f.name] = getattr(self, f.name)
                 continue
 
             val = getattr(self, f.name)
             if isinstance(val, jax.Array):
-                kwargs[f.name] = val[idx]
+                init_kw[f.name] = val.at[idx].get(**_gkw)
             elif isinstance(val, ArrayTree):
-                kwargs[f.name] = val._reindex(idx, new_prefix + new_shape, val.shape)
+                init_kw[f.name] = val._reindex(
+                    idx, new_prefix + new_shape, val.shape, get_kw
+                )
             else:
-                kwargs[f.name] = val
+                init_kw[f.name] = val
 
-        return type(self)(**kwargs)
+        return type(self)(**init_kw)
