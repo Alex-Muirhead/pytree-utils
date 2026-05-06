@@ -33,7 +33,7 @@ testpaths = ["tests"]
 [tool.ruff]
 src = ["src"]
 target-version = "py312"
-line-length = 88
+line-length = 108
 
 [tool.ruff.lint]
 select = [
@@ -61,7 +61,7 @@ known-first-party = ["pytree_utils"]
 source-roots = ["src"]
 
 [tool.pylint.format]
-max-line-length = 88  # match ruff
+max-line-length = 108  # match ruff
 
 [tool.pylint."messages control"]
 disable = [
