@@ -14,7 +14,7 @@ def _binop(op: Any, left: Any, right: Any) -> Any:
 
 
 def _rbinop(op: Any, left: Any, right: Any) -> Any:
-    """Apply ``op(right_leaf, left_leaf)`` elementwise — for reflected ops."""
+    """Apply ``op(right_leaf, left_leaf)`` elementwise -- for reflected ops."""
     return jax.tree.map(op, jax.tree.broadcast(right, left), left)
 
 
@@ -86,7 +86,7 @@ class _ArrayTreeOps:
         return _rbinop(jnp.power, self, other)
 
     # ------------------------------------------------------------------
-    # Comparison  (elementwise — returns a same-structure tree of bools)
+    # Comparison  (elementwise -- returns a same-structure tree of bools)
     # ------------------------------------------------------------------
 
     def __lt__(self, other: Any) -> Any:

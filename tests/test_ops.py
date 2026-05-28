@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 import pytest
 
-from pytree_utils import ArrayTree, leaf, node
+from pytree_utils import ArrayTree, blueprint, leaf, node
 
 
 class Vec(ArrayTree):
@@ -15,7 +15,7 @@ class World(ArrayTree):
 
 @pytest.fixture
 def ones():
-    return Vec.blueprint(shape=2).ones()
+    return blueprint(Vec, shape=2).ones()
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def test_abs(ones):
 
 
 # ----------------------------------------------------------------------
-# Binary arithmetic — scalar rhs
+# Binary arithmetic -- scalar rhs
 # ----------------------------------------------------------------------
 
 
@@ -107,7 +107,7 @@ def test_rpow_scalar(ones):
 
 
 # ----------------------------------------------------------------------
-# Binary arithmetic — tree rhs
+# Binary arithmetic -- tree rhs
 # ----------------------------------------------------------------------
 
 
@@ -158,6 +158,6 @@ def test_ge(ones):
 
 
 def test_nested_ops():
-    w = World.blueprint(shape=2).ones()
+    w = blueprint(World, shape=2).ones()
     r = (w * 3.0 + 1.0) * 2.0
     assert jnp.all(r.vel.x == 8.0)

@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 import pytest
 
-from pytree_utils import ArrayTree, leaf, node
+from pytree_utils import ArrayTree, blueprint, leaf, node
 
 
 class Vel(ArrayTree):
@@ -15,12 +15,12 @@ class World(ArrayTree):
 
 @pytest.fixture
 def zeros():
-    return World.blueprint(shape=2).zeros()
+    return blueprint(World, shape=2).zeros()
 
 
 @pytest.fixture
 def ones():
-    return World.blueprint(shape=2).ones()
+    return blueprint(World, shape=2).ones()
 
 
 @pytest.fixture

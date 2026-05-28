@@ -1,7 +1,7 @@
-import pytest
 import jax
+import pytest
 
-from pytree_utils import ArrayTree, leaf, node
+from pytree_utils import ArrayTree, blueprint, leaf, node
 
 
 class Vel(ArrayTree):
@@ -15,7 +15,7 @@ class World(ArrayTree):
 
 @pytest.fixture
 def world() -> World:
-    proto = World.blueprint(shape=(2,))
+    proto = blueprint(World, shape=(2,))
     proto.vel.shape = (4,)
     return proto.zeros()
 
@@ -49,14 +49,14 @@ def test_at_set_scalar(world: World):
 
 
 def test_blueprint_mutation():
-    proto = World.blueprint(shape=(2,))
+    proto = blueprint(World, shape=(2,))
     proto.vel.shape = (5,)
     w = proto.zeros()
     assert w.vel.vx.shape == (2, 5, 1)
 
 
 def test_blueprint_slots():
-    proto = World.blueprint(shape=(2,))
+    proto = blueprint(World, shape=(2,))
     with pytest.raises(AttributeError):
         proto.nonexistent = 42
 
@@ -87,27 +87,27 @@ class Wrapper(ArrayTree):
 
 
 def test_generic_blueprint_uses_concrete_type():
-    bp = Container[Vel].blueprint(shape=(2,))
+    bp = blueprint(Container[Vel], shape=(2,))
     # child should be a VelBlueprint with node_shape default (5,)
-    from pytree_utils.array_tree import _BlueprintBase
+    from pytree_utils._blueprint import _BlueprintBase
 
     assert isinstance(bp.child, _BlueprintBase)
     assert bp.child.shape == (5,)
 
 
 def test_generic_leaf_shapes():
-    w = Container[Vel].blueprint(shape=(2,)).zeros()
+    w = blueprint(Container[Vel], shape=(2,)).zeros()
     assert w.child.vx.shape == (2, 5, 1)
     assert w.child.vy.shape == (2, 5, 2)
 
 
 def test_generic_different_concrete_types():
-    wp = Container[Pos].blueprint(shape=(2,)).zeros()
+    wp = blueprint(Container[Pos], shape=(2,)).zeros()
     assert wp.child.x.shape == (2, 5, 3)
 
 
 def test_generic_blueprint_mutation():
-    bp = Container[Vel].blueprint(shape=(2,))
+    bp = blueprint(Container[Vel], shape=(2,))
     bp.child.shape = (7,)
     w = bp.zeros()
     assert w.child.vx.shape == (2, 7, 1)
@@ -120,12 +120,12 @@ def test_shape_int_shorthand():
     class Track(ArrayTree):
         s: Speed = node(shape=2)
 
-    w = Track.blueprint(shape=4).zeros()
+    w = blueprint(Track, shape=4).zeros()
     assert w.s.v.shape == (4, 2, 3)
 
 
 def test_generic_children():
-    bp = Wrapper.blueprint(shape=(3,))
+    bp = blueprint(Wrapper, shape=(3,))
     w = bp.zeros()
     assert hasattr(w.one.child, "x")
     assert hasattr(w.two.child, "vx")

@@ -30,9 +30,6 @@ class _BlueprintBase:
 
     _array_tree_cls: ClassVar[type]
 
-    def __class_getitem__(cls, item: Any) -> type:
-        return cls
-
     def _build(self, prefix: ShapeInput = (), init_fn: InitFn = jnp.zeros) -> Any:
         """Instantiate arrays from this blueprint (Stage 3).
 
@@ -85,27 +82,42 @@ class _BlueprintBase:
         return self._build(prefix=prefix, init_fn=jnp.empty)
 
 
-@dc.dataclass(frozen=True)
-class _ParameterizedTree:
-    """Returned by ``GenericArrayTree[ConcreteType]``; provides ``.blueprint()``."""
+def blueprint(cls_or_alias: Any, shape: ShapeInput = ()) -> _BlueprintBase:
+    """Create a mutable Blueprint for an ArrayTree subclass.
 
-    cls: type
-    type_map: dict
+    Accepts either a concrete ``ArrayTree`` subclass or a generic alias
+    such as ``Container[Vel]``::
 
-    def blueprint(self, shape: ShapeInput = ()) -> _BlueprintBase:
-        """Create a Blueprint with TypeVars resolved to their concrete types."""
-        return _make_blueprint_cls(self.cls, self.type_map)(shape=_to_shape(shape))
-
-
-def _resolve_hint(hint: Any, type_map: dict) -> Any:
-    """Substitute a TypeVar with its concrete type if present in *type_map*."""
-    if isinstance(hint, typing.TypeVar):
-        return type_map.get(hint, hint)
-    return hint
+        bp1 = blueprint(World, shape=(2,))
+        bp2 = blueprint(Container[Vel], shape=(2,))
+    """
+    cls, type_map = _split_alias(cls_or_alias)
+    bp_cls = _get_blueprint_cls(cls, type_map)
+    return bp_cls(shape=_to_shape(shape))
 
 
-def _get_blueprint_cls(array_tree_cls: type) -> type:
-    """Return (creating if necessary) the Blueprint class for an ArrayTree subclass."""
+def _split_alias(cls_or_alias: Any) -> tuple[type, dict]:
+    """Return ``(array_tree_cls, type_map)`` for a class or generic alias."""
+    if isinstance(cls_or_alias, type):
+        return cls_or_alias, {}
+    origin = typing.get_origin(cls_or_alias)
+    args = typing.get_args(cls_or_alias)
+    if origin is None or not args:
+        raise TypeError(f"Cannot create blueprint from {cls_or_alias!r}")
+    type_params = getattr(origin, "__type_params__", ())
+    return origin, dict(zip(type_params, args, strict=False))
+
+
+def _get_blueprint_cls(array_tree_cls: type, type_map: dict) -> type:
+    """Return the Blueprint class for an ArrayTree subclass.
+
+    For the unparameterized case the result is cached on the class. For a
+    non-empty *type_map* a fresh class is built each call -- parameterized
+    blueprint classes are cheap to build and would otherwise need a
+    composite cache key.
+    """
+    if type_map:
+        return _make_blueprint_cls(array_tree_cls, type_map)
     if "_blueprint_cls" not in array_tree_cls.__dict__:
         array_tree_cls._blueprint_cls = _make_blueprint_cls(array_tree_cls, {})  # type: ignore[attr-defined]
     return array_tree_cls._blueprint_cls  # type: ignore[attr-defined]
@@ -132,25 +144,42 @@ def _make_blueprint_cls(array_tree_cls: type, type_map: dict) -> type:
             fields.append((f.name, LeafSpec, dc.field(default=f.metadata["leaf_spec"])))
             continue
 
-        hint = _resolve_hint(hints.get(f.name), type_map)
-        node_shape = f.metadata.get("node_shape", ())
+        child_cls, child_type_map = _resolve_child(hints.get(f.name), type_map)
+        if child_cls is None or not issubclass(child_cls, ArrayTree):
+            continue
 
-        if isinstance(hint, _ParameterizedTree):
-            child_bp_cls = _make_blueprint_cls(hint.cls, hint.type_map)
-            factory = functools.partial(child_bp_cls, shape=node_shape)
-            fields.append((f.name, child_bp_cls, dc.field(default_factory=factory)))
-        else:
-            origin: Any = typing.get_origin(hint) or hint
-            if isinstance(origin, type) and issubclass(origin, ArrayTree):
-                child_bp_cls = _get_blueprint_cls(origin)
-                factory = functools.partial(child_bp_cls, shape=node_shape)
-                fields.append((f.name, child_bp_cls, dc.field(default_factory=factory)))
+        node_shape = f.metadata.get("node_shape", ())
+        child_bp_cls = _get_blueprint_cls(child_cls, child_type_map)
+        factory = functools.partial(child_bp_cls, shape=node_shape)
+        fields.append((f.name, child_bp_cls, dc.field(default_factory=factory)))
 
     blueprint_cls = dc.make_dataclass(
         f"{array_tree_cls.__name__}Blueprint",
         fields,
-        bases=(_BlueprintBase[array_tree_cls],),
+        bases=(_BlueprintBase,),
         slots=True,
     )
     blueprint_cls._array_tree_cls = array_tree_cls  # type: ignore[attr-defined]
     return blueprint_cls
+
+
+def _resolve_child(hint: Any, type_map: dict) -> tuple[type | None, dict]:
+    """Reduce a field annotation to ``(child_cls, child_type_map)``.
+
+    Substitutes any ``TypeVar`` in *hint* (or its generic args) using
+    *type_map*. Returns ``(None, {})`` when the hint is not an ArrayTree-like
+    class or alias.
+    """
+    if isinstance(hint, typing.TypeVar):
+        hint = type_map.get(hint, hint)
+    if isinstance(hint, type):
+        return hint, {}
+    origin = typing.get_origin(hint)
+    args = typing.get_args(hint)
+    if origin is None or not isinstance(origin, type):
+        return None, {}
+    resolved = tuple(
+        type_map.get(a, a) if isinstance(a, typing.TypeVar) else a for a in args
+    )
+    type_params = getattr(origin, "__type_params__", ())
+    return origin, dict(zip(type_params, resolved, strict=False))

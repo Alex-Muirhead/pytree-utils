@@ -8,14 +8,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from pytree_utils._blueprint import (
-    _BlueprintBase,
-    _get_blueprint_cls,
-    _ParameterizedTree,
-)
 from pytree_utils._index import _IndexHelper
 from pytree_utils._ops import _ArrayTreeOps
-from pytree_utils._spec import ShapeInput, ShapeType, _to_shape
+from pytree_utils._spec import ShapeType
 
 
 class ArrayTree(_ArrayTreeOps, eqx.Module):
@@ -38,28 +33,30 @@ class ArrayTree(_ArrayTreeOps, eqx.Module):
             vel: Vel = node(shape=(3,))
 
     **Stage 2 - Blueprint (mutable)**
-    Call ``cls.blueprint(shape=...)`` to get a mutable ``Blueprint`` whose
-    fields can be edited freely before any arrays are allocated::
+    Call ``blueprint(cls, shape=...)`` to get a mutable ``Blueprint`` whose
+    fields can be edited freely before any arrays are allocated. Generic
+    nodes are parameterised with the standard ``Cls[T]`` syntax::
 
-        proto = World.blueprint(shape=(2,))
-        proto.vel.shape = (4,)            # direct mutation
-        proto.vel = Vel.blueprint(shape=(5,))  # swap child
+        proto = blueprint(World, shape=(2,))
+        proto.vel.shape = (4,)                # direct mutation
+        proto.vel = blueprint(Vel, shape=(5,))  # swap child
+        cproto = blueprint(Container[Vel], shape=(2,))  # generic
 
     **Stage 3 - Instantiation (immutable pytree)**
     Call ``.zeros()``, ``.ones()``, ``empty()``, or ``.full(fill_value=...)``
     on the blueprint to produce a real ``ArrayTree``::
 
         world = proto.zeros()
-        world.vel.vx.shape  # (2, 5, 1) — World(2) + Vel(5) + leaf(1)
+        world.vel.vx.shape  # (2, 5, 1) -- World(2) + Vel(5) + leaf(1)
 
     **Indexing**
     Use ``.at[idx].get()`` / ``.at[idx].set(values)`` to index into the
     accumulated prefix. Indices that reach into leaf-specific dimensions
     are rejected::
 
-        world.at[0].get()           # ok — World prefix is 1-dim
+        world.at[0].get()           # ok -- World prefix is 1-dim
         world.at[0, 1].get()        # IndexError
-        world.vel.at[0, 3].get()    # ok — vel's accumulated prefix is (2, 5)
+        world.vel.at[0, 3].get()    # ok -- vel's accumulated prefix is (2, 5)
     """
 
     shape: ShapeType = eqx.field(static=True, kw_only=True, default=())
@@ -75,21 +72,6 @@ class ArrayTree(_ArrayTreeOps, eqx.Module):
                     f"Bad leaf shape at self{jax.tree_util.keystr(path)}\n"
                     f"Expected shape prefixed with {full_prefix}, got {leaf.shape}"
                 )
-
-    @classmethod
-    def __class_getitem__(cls, params: Any) -> _ParameterizedTree:
-        """Support ``GenericNode[ConcreteType].blueprint(...)`` syntax."""
-        if not isinstance(params, tuple):
-            params = (params,)
-        type_params = getattr(cls, "__type_params__", ())
-        if not type_params:
-            return super().__class_getitem__(params if len(params) > 1 else params[0])  # type: ignore[misc]
-        return _ParameterizedTree(cls, dict(zip(type_params, params, strict=False)))
-
-    @classmethod
-    def blueprint(cls, shape: ShapeInput = ()) -> _BlueprintBase:
-        """Create a mutable Blueprint for this node type (Stage 2)."""
-        return _get_blueprint_cls(cls)(shape=_to_shape(shape))
 
     @property
     def at(self) -> _IndexHelper[Self]:

@@ -21,7 +21,7 @@ Requires Python 3.12+ and JAX.
 
 ```python
 import jax.numpy as jnp
-from pytree_utils import ArrayTree, leaf, node
+from pytree_utils import ArrayTree, blueprint, leaf, node
 
 class Velocity(ArrayTree):
     vx: jax.Array = leaf(shape=1)
@@ -31,7 +31,7 @@ class World(ArrayTree):
     vel: Velocity = node(shape=3)
 
 # Stage 2 - mutable blueprint
-proto = World.blueprint(shape=2)
+proto = blueprint(World, shape=2)
 proto.vel.shape = 4          # override the node shape before allocating
 
 # Stage 3 - allocate
@@ -63,7 +63,7 @@ accepting either a scalar or a same-structure `ArrayTree` on the right-hand
 side.
 
 ```python
-a = World.blueprint(shape=2).ones()
+a = blueprint(World, shape=2).ones()
 b = a * 2.0        # all leaves scaled
 c = a + b          # elementwise, leaf by leaf
 mask = a < b       # returns a same-structure tree of booleans
@@ -78,7 +78,7 @@ blueprint time.
 class Container[T: ArrayTree](ArrayTree):
     child: T = node(shape=5)
 
-bp = Container[Velocity].blueprint(shape=2)
+bp = blueprint(Container[Velocity], shape=2)
 w  = bp.zeros()
 w.child.vx.shape  # (2, 5, 1) -- Container(2) x node(5) x leaf(1)
 ```
