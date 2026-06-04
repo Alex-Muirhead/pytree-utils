@@ -88,3 +88,9 @@ disable = [
     # PEP 695 type-parameter bounds are evaluated lazily; pylint doesn't know this
     "E0601",  # used-before-assignment
 ]
+
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]

@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import dataclasses as dc
-from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 import jax
 
 ShapeType = tuple[int, ...]
 ShapeInput = int | ShapeType
-InitFn = Callable[[ShapeType, Any], jax.Array]
+
+
+class InitFn(Protocol):
+    """Callable signature for the per-leaf array initialiser.
+
+    Must accept ``shape`` positionally and ``dtype`` by keyword.  ``dtype`` is
+    spelled keyword-only so the protocol accepts ``functools.partial(jnp.full,
+    fill_value=...)`` -- which only exposes ``dtype`` by keyword once
+    ``fill_value`` has been pre-bound.
+    """
+
+    def __call__(self, shape: ShapeType, *, dtype: Any = ...) -> jax.Array: ...
 
 
 def _to_shape(s: ShapeInput) -> ShapeType:
@@ -30,7 +40,7 @@ class LeafSpec:
     dtype: Any = float
 
 
-def leaf(shape: ShapeInput = (), dtype: Any = float, **kwargs) -> dc.Field:
+def leaf(shape: ShapeInput = (), dtype: Any = float, **kwargs) -> Any:
     """Declare an array leaf field with shape and dtype (Stage 1).
 
     Usage::
@@ -38,6 +48,10 @@ def leaf(shape: ShapeInput = (), dtype: Any = float, **kwargs) -> dc.Field:
         class MyNode(ArrayTree):
             x: jax.Array = leaf(shape=(3,))
             y: jax.Array = leaf(shape=(4,), dtype=jnp.float16)
+
+    Returns ``Any`` (rather than ``dc.Field``) so the call can be assigned to
+    a typed field annotation -- the same convention ``dataclasses.field``
+    uses in typeshed.
     """
     metadata = dict(kwargs.pop("metadata", None) or {})
     if "leaf_spec" in metadata:
@@ -46,7 +60,7 @@ def leaf(shape: ShapeInput = (), dtype: Any = float, **kwargs) -> dc.Field:
     return dc.field(**kwargs, metadata=metadata)
 
 
-def node(shape: ShapeInput = (), **kwargs) -> dc.Field:
+def node(shape: ShapeInput = (), **kwargs) -> Any:
     """Declare a child node field and specify its shape (Stage 1).
 
     The *shape* is used when the parent's ``Blueprint`` is constructed,

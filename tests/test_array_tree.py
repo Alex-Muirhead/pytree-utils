@@ -57,8 +57,10 @@ def test_blueprint_mutation():
 
 def test_blueprint_slots():
     proto = blueprint(World, shape=(2,))
+    # setattr rather than direct assignment so static checkers do not flag
+    # the deliberately invalid attribute name.
     with pytest.raises(AttributeError):
-        proto.nonexistent = 42
+        setattr(proto, "nonexistent", 42)
 
 
 def test_zeros_like_ones_like(world: World):
