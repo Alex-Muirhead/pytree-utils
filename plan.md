@@ -23,8 +23,8 @@ bar = blueprint(Bar).ones()
 
 ```python
 class Vel(ArrayTree):
-    vx: jax.Array = leaf(shape=(1,))
-    vy: jax.Array = leaf(shape=(2,))
+    vx: jax.Array = leaf(shape=(1, 1,))
+    vy: jax.Array = leaf(shape=(1, 2,))
 
 
 class World(ArrayTree):
@@ -35,4 +35,6 @@ bp = blueprint(World, shape=2)
 world = bp.zeros()
 world.shape  # == (2,)
 world.vel.shape  # == (2, 3)
+world.vel.vx.shape  # == (2, 3, 1, 1)
+world.vel.vy.shape  # == (2, 3, 1, 2)
 ```

@@ -87,12 +87,3 @@ def field_default(field: dc.Field, *, throw: bool = True) -> Any:
     if throw:
         raise ValueError(f"Field '{field.name}' has no default value or factory")
     return None
-
-
-def count_index_dims(idx: tuple) -> int:
-    """Count how many existing dimensions an index tuple addresses.
-
-    Every element other than ``None`` / ``numpy.newaxis`` addresses one
-    dimension.
-    """
-    return sum(i is not None for i in idx)

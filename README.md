@@ -61,6 +61,18 @@ world.vel.at[0, 3].get()    # shape (1,)  -- drops World(2) x Vel(4)
 world.at[0].set(1.0)        # broadcast scalar into all leaves at index 0
 ```
 
+You can also walk a field path *before* indexing, with `.at.<field>...[idx]`
+(any depth, nodes or leaves). The update ops (`set`/`add`/`mul`/`min`/`max`/
+`apply`) splice their result back into the root, so they keep the **root type**
+and only touch the focused sub-path; `get` instead narrows to the focused
+subtree.
+
+```python
+world.at.vel[0].set(1.0)    # a World -- only world.vel at index 0 is changed
+world.at.vel.vx[0].add(2.0) # a World -- only the vx leaf is touched
+world.at.vel[0].get()       # a Velocity -- same as world.vel.at[0].get()
+```
+
 ## Arithmetic
 
 Standard arithmetic and comparisons work elementwise across the tree,
