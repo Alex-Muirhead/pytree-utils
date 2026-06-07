@@ -37,6 +37,26 @@ def test_node_shape_follows_indexing(world: World):
     assert world.vel.at[0, 3].get().shape == ()
 
 
+def test_leafless_node_reports_full_shape():
+    # A node whose subtree holds no data still reports its accumulated shape,
+    # via the dedicated zero-sized shape leaf.
+    class Empty(ArrayTree):
+        pass
+
+    class Holder(ArrayTree):
+        e: Empty = node(shape=(3,))
+
+    h = blueprint(Holder, shape=(2,)).zeros()
+    assert h.shape == (2,)
+    assert h.e.shape == (2, 3)
+
+
+def test_shape_leaf_costs_no_memory(world: World):
+    # The shape markers are real leaves but hold zero elements.
+    assert all(leaf.nbytes > 0 or leaf.size == 0 for leaf in jax.tree.leaves(world))
+    assert any(leaf.size == 0 for leaf in jax.tree.leaves(world))
+
+
 def test_at_get_root(world: World):
     s = world.at[0].get()
     assert s.vel.vx.shape == (4, 1)

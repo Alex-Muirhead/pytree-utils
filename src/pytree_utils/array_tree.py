@@ -1,6 +1,5 @@
 """The ArrayTree base class."""
 
-import dataclasses as dc
 import functools
 from typing import Any, Self
 
@@ -60,52 +59,32 @@ class ArrayTree(_ArrayTreeOps, eqx.Module):
         world.vel.at[0, 3].get()    # ok -- vel's accumulated prefix is (2, 5)
     """
 
-    _own_shape: ShapeType = eqx.field(static=True, kw_only=True, default=(), repr=False)
+    # A dedicated zero-sized array whose non-trailing axes spell out this node's
+    # full accumulated prefix. It costs no memory (its trailing axis is 0) yet,
+    # being a real leaf, it is sliced in lockstep with the data leaves whenever
+    # the tree is indexed -- so ``shape`` never needs separate bookkeeping.
+    _shape: jax.Array = eqx.field(kw_only=True, repr=False)
 
     @property
     def shape(self) -> ShapeType:
         """Full accumulated shape of this node (every ancestor block plus its own).
 
-        Derived on demand rather than stored: a representative array-bearing
-        field reveals the prefix once its own (indexing-invariant) shape is
-        stripped off. Because of this, indexing only has to slice the leaf
-        arrays -- the reported shape then follows automatically, with no
-        per-node metadata to rewrite.
+        Read straight off the dedicated ``_shape`` leaf by dropping its empty
+        trailing axis. Because that leaf rides along with the data under any
+        indexing, the reported shape stays correct with no metadata to rewrite.
         """
-        for f in dc.fields(self):
-            prefix = self._field_prefix(f)
-            if prefix is not None:
-                return prefix
-        return self._own_shape
-
-    def _field_prefix(self, f: dc.Field) -> ShapeType | None:
-        """Accumulated prefix implied by field *f*, or None if it holds no array data.
-
-        For a leaf field the prefix is the array shape minus the leaf's own
-        (fixed) shape; for a child node it is the child's full shape minus the
-        child's own block. Both subtrahends are invariant under indexing.
-        """
-        if not f.init or f.metadata.get("static", False):
-            return None
-        val = getattr(self, f.name)
-        if isinstance(val, jax.Array):
-            spec = f.metadata.get("leaf_spec")
-            if spec is None:
-                return None
-            return val.shape[: val.ndim - len(spec.shape)]
-        if isinstance(val, ArrayTree):
-            child = val.shape
-            return child[: len(child) - len(val._own_shape)]
-        return None
+        return self._shape.shape[:-1]
 
     def __check_init__(self):
-        """Validate that every array-bearing field agrees on the accumulated prefix."""
-        prefixes = [p for f in dc.fields(self) if (p := self._field_prefix(f)) is not None]
-        if prefixes and any(p != prefixes[0] for p in prefixes):
-            raise ValueError(
-                f"Inconsistent accumulated prefixes across fields of "
-                f"{type(self).__name__}: {prefixes}"
-            )
+        """Validate that every leaf is prefixed by this node's accumulated shape."""
+        prefix = self.shape
+        n = len(prefix)
+        for path, leaf in jax.tree.leaves_with_path(self):
+            if leaf.shape[:n] != prefix:
+                raise ValueError(
+                    f"Bad leaf shape at self{jax.tree_util.keystr(path)}\n"
+                    f"Expected shape prefixed with {prefix}, got {leaf.shape}"
+                )
 
     @property
     def at(self) -> _IndexHelper[Self]:
