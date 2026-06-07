@@ -30,10 +30,13 @@ class _IndexedHelper[T: ArrayTree]:
         )
 
     def get(self, **kwargs: Any) -> T:
-        """Return a new node with ``idx`` applied to all leaf arrays."""
-        full_prefix = self.node._prefix + self.node.shape
-        remaining = full_prefix[_count_index_dims(self.idx) :]
-        return self.node._reindex(self.idx, new_prefix=(), new_shape=remaining, get_kw=kwargs or None)
+        """Return a new node with ``idx`` applied to all leaf arrays.
+
+        The shape metadata is derived from the leaves, so slicing the arrays is
+        all that is required -- every node's reported shape updates on its own.
+        """
+        idx = self.idx
+        return jax.tree.map(lambda arr: arr.at[idx].get(**kwargs), self.node)
 
     def set(self, values: Any, **kwargs: Any) -> T:
         """Return a copy with indexed leaves replaced by *values*."""
@@ -71,13 +74,13 @@ class _IndexHelper[T: ArrayTree]:
         if not isinstance(idx, tuple):
             idx = (idx,)
 
-        full_prefix = self.node._prefix + self.node.shape
+        full_shape = self.node.shape
         n = _count_index_dims(idx)
 
-        if n > len(full_prefix):
+        if n > len(full_shape):
             raise IndexError(
-                f"{type(self.node).__name__} has a {len(full_prefix)}-dimensional "
-                f"prefix {full_prefix}; cannot index with {n} dimension(s)"
+                f"{type(self.node).__name__} has a {len(full_shape)}-dimensional "
+                f"prefix {full_shape}; cannot index with {n} dimension(s)"
             )
 
         return _IndexedHelper(self.node, idx)

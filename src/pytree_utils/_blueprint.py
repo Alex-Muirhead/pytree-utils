@@ -66,14 +66,13 @@ class BlueprintBase[T: ArrayTree]:
         prefix = _to_shape(prefix)
         accumulated = prefix + self.shape
         # Init-kwargs assemble heterogeneous values (jax.Arrays, sub-ArrayTrees,
-        # ShapeTypes, static-field defaults), so the value side is Any.
-        kwargs: dict[str, Any] = {
-            "shape": self.shape,
-            "_prefix": prefix,
-        }
+        # ShapeTypes, static-field defaults), so the value side is Any. The node
+        # only stores its own shape block; ancestor dims live on the arrays and
+        # are recovered by the ``shape`` property.
+        kwargs: dict[str, Any] = {"_own_shape": self.shape}
 
         for f in dc.fields(cls):
-            if not f.init or f.name in ("shape", "_prefix"):
+            if not f.init or f.name == "_own_shape":
                 continue
             if f.metadata.get("static", False):
                 kwargs[f.name] = _field_default(f)
@@ -136,7 +135,7 @@ def make_blueprint_cls[T: ArrayTree](array_tree_cls: type[T], type_map: TypeMap)
     hints = typing.get_type_hints(array_tree_cls)
 
     for f in dc.fields(array_tree_cls):
-        if f.name in ("shape", "_prefix") or not f.init:
+        if f.name == "_own_shape" or not f.init:
             continue
         if f.metadata.get("static", False):
             continue

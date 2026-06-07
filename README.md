@@ -39,11 +39,16 @@ world = proto.zeros()
 
 world.vel.vx.shape  # (2, 4, 1) -- World(2) x Vel(4) x leaf(1)
 world.vel.vy.shape  # (2, 4, 2)
+
+world.shape         # (2,)   -- the full accumulated shape of a node ...
+world.vel.shape     # (2, 4) -- ... including every ancestor block
 ```
 
 Leaf array shapes are the concatenation of all ancestor shapes plus the
-leaf's own shape. The blueprint lets you adjust those shapes freely before
-committing to an allocation.
+leaf's own shape. A node's `shape` reports that same accumulated prefix and
+is derived from its leaves on demand, so indexing only has to slice the
+arrays -- node shapes follow automatically. The blueprint lets you adjust
+those shapes freely before committing to an allocation.
 
 ## Indexing
 

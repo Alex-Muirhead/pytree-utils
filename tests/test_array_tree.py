@@ -25,6 +25,18 @@ def test_leaf_shapes(world: World):
     assert world.vel.vy.shape == (2, 4, 2)
 
 
+def test_node_shape_is_full_accumulated(world: World):
+    # A node reports its full accumulated shape, not just its own block.
+    assert world.shape == (2,)
+    assert world.vel.shape == (2, 4)
+
+
+def test_node_shape_follows_indexing(world: World):
+    # Indexing only slices the leaves; node shapes derive automatically.
+    assert world.at[0].get().vel.shape == (4,)
+    assert world.vel.at[0, 3].get().shape == ()
+
+
 def test_at_get_root(world: World):
     s = world.at[0].get()
     assert s.vel.vx.shape == (4, 1)
@@ -57,10 +69,8 @@ def test_blueprint_mutation():
 
 def test_blueprint_slots():
     proto = blueprint(World, shape=(2,))
-    # setattr rather than direct assignment so static checkers do not flag
-    # the deliberately invalid attribute name.
     with pytest.raises(AttributeError):
-        setattr(proto, "nonexistent", 42)
+        proto.nonexistent = 42
 
 
 def test_zeros_like_ones_like(world: World):
@@ -91,9 +101,9 @@ class Wrapper(ArrayTree):
 def test_generic_blueprint_uses_concrete_type():
     bp = blueprint(Container[Vel], shape=(2,))
     # child should be a VelBlueprint with node_shape default (5,)
-    from pytree_utils._blueprint import _BlueprintBase
+    from pytree_utils._blueprint import BlueprintBase
 
-    assert isinstance(bp.child, _BlueprintBase)
+    assert isinstance(bp.child, BlueprintBase)
     assert bp.child.shape == (5,)
 
 
