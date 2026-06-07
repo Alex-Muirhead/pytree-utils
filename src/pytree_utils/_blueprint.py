@@ -13,8 +13,8 @@ from pytree_utils._spec import (
     LeafSpec,
     ShapeInput,
     ShapeType,
-    _field_default,
-    _to_shape,
+    field_default,
+    to_shape,
 )
 from pytree_utils.array_tree import ArrayTree
 
@@ -33,50 +33,41 @@ class BlueprintBase[T: ArrayTree]:
     / ``.full()`` / ``.empty()`` return.
     """
 
-    # Load-bearing: Python only enforces ``__slots__`` end-to-end when every
-    # ancestor declares slots. Generated subclasses use ``slots=True`` to
-    # prevent typo'd field assignments, which only works if this base also
-    # opts out of ``__dict__``.
+    # Load-bearing: ``__slots__`` is only enforced end-to-end if every ancestor
+    # declares it, so this base opts out of ``__dict__`` to let generated
+    # ``slots=True`` subclasses reject typo'd field assignments.
     __slots__ = ()
 
     shape: ShapeType
     _array_tree_cls: type[T]
 
     if TYPE_CHECKING:
-        # Concrete blueprint subclasses are generated dynamically from each
-        # ArrayTree subclass's field list, so their fields are invisible to
-        # static type checkers. These stubs keep ``proto.vel`` /
-        # ``proto.child`` accesses typed as Any, and the ``cls(shape=...)``
-        # construction site type-checks without our needing a full
-        # dataclass_transform.  At runtime, the generated dataclass supplies
-        # the real ``__init__`` and ``__slots__`` enforces field discipline.
-        # def __init__(self, *, shape: ShapeType = (), **kwargs: Any) -> None: ...
+        # Concrete blueprints are generated dynamically, so their fields are
+        # invisible to type checkers; this stub types ``proto.vel`` etc. as Any.
+        def __init__(self, shape: ShapeInput = ()) -> None: ...
         def __getattr__(self, name: str) -> Any: ...
 
     def _build(self, prefix: ShapeInput = (), init_fn: InitFn = jnp.zeros) -> T:
-        """Instantiate arrays from this blueprint (Stage 3).
+        """Instantiate a real ``ArrayTree`` from this blueprint.
 
         Args:
             prefix: Extra leading dimensions prepended outside this node's
                     own ``shape``.
-            init_fn: ``(shape, dtype=...) -> jax.Array``.  Defaults to
-                     ``jnp.zeros``.
+            init_fn: ``(shape, dtype=...) -> jax.Array``; defaults to ``jnp.zeros``.
         """
         cls = self._array_tree_cls
-        prefix = _to_shape(prefix)
+        prefix = to_shape(prefix)
         accumulated = prefix + self.shape
-        # Init-kwargs assemble heterogeneous values (jax.Arrays, sub-ArrayTrees,
-        # ShapeTypes, static-field defaults), so the value side is Any. The
-        # dedicated ``_shape`` leaf carries the node's accumulated prefix with a
-        # zero-sized trailing axis, so it occupies no memory yet rides along with
-        # the data under indexing; ``ArrayTree.shape`` just reads it back.
+        # The zero-sized ``_shape`` leaf records this node's accumulated prefix;
+        # remaining kwargs hold heterogeneous values (arrays, sub-trees, static
+        # defaults), hence the ``Any`` value type.
         kwargs: dict[str, Any] = {"_shape": jnp.empty((*accumulated, 0))}
 
         for f in dc.fields(cls):
             if not f.init or f.name == "_shape":
                 continue
             if f.metadata.get("static", False):
-                kwargs[f.name] = _field_default(f)
+                kwargs[f.name] = field_default(f)
                 continue
 
             val = getattr(self, f.name)
@@ -118,7 +109,7 @@ def blueprint[T: ArrayTree](cls_or_alias: type[T], shape: ShapeInput = ()) -> Bl
     """
     cls, type_map = get_type_mapping(cls_or_alias)
     bp_cls = make_blueprint_cls(cls, type_map)
-    return bp_cls(shape=_to_shape(shape))
+    return bp_cls(shape=to_shape(shape))
 
 
 def make_blueprint_cls[T: ArrayTree](array_tree_cls: type[T], type_map: TypeMap) -> type[BlueprintBase[T]]:
@@ -167,7 +158,7 @@ def make_blueprint_cls[T: ArrayTree](array_tree_cls: type[T], type_map: TypeMap)
     return blueprint_cls
 
 
-def get_type_mapping(typ_: type) -> tuple[type, TypeMap]:
+def get_type_mapping[T: type](typ_: T) -> tuple[T, TypeMap]:
     """Return ``(array_tree_cls, type_map)`` for a class or generic alias."""
     origin = typing.get_origin(typ_)
     if origin is None:

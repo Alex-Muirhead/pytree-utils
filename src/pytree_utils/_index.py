@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING, Any
 
 import jax
 
-from pytree_utils._spec import _count_index_dims
+from pytree_utils._spec import count_index_dims
 
 if TYPE_CHECKING:
     from pytree_utils.array_tree import ArrayTree
 
 
 @dc.dataclass(frozen=True)
-class _IndexedHelper[T: ArrayTree]:
+class IndexedHelper[T: ArrayTree]:
     """Returned by ``ArrayTree.at[idx]``; mirrors JAX's scatter/gather API."""
 
     node: T
@@ -30,10 +30,10 @@ class _IndexedHelper[T: ArrayTree]:
         )
 
     def get(self, **kwargs: Any) -> T:
-        """Return a new node with ``idx`` applied to all leaf arrays.
+        """Return a new node with ``idx`` applied to every leaf.
 
-        The shape metadata is derived from the leaves, so slicing the arrays is
-        all that is required -- every node's reported shape updates on its own.
+        Each node's ``_shape`` leaf is indexed alongside the data, so the
+        reported shapes stay correct without any extra bookkeeping.
         """
         idx = self.idx
         return jax.tree.map(lambda arr: arr.at[idx].get(**kwargs), self.node)
@@ -65,22 +65,21 @@ class _IndexedHelper[T: ArrayTree]:
 
 
 @dc.dataclass(frozen=True)
-class _IndexHelper[T: ArrayTree]:
+class IndexHelper[T: ArrayTree]:
     """Returned by ``ArrayTree.at``; validates the index and captures it."""
 
     node: T
 
-    def __getitem__(self, idx: Any) -> _IndexedHelper[T]:
+    def __getitem__(self, idx: Any) -> IndexedHelper[T]:
         if not isinstance(idx, tuple):
             idx = (idx,)
 
-        full_shape = self.node.shape
-        n = _count_index_dims(idx)
-
-        if n > len(full_shape):
+        shape = self.node.shape
+        n = count_index_dims(idx)
+        if n > len(shape):
             raise IndexError(
-                f"{type(self.node).__name__} has a {len(full_shape)}-dimensional "
-                f"prefix {full_shape}; cannot index with {n} dimension(s)"
+                f"{type(self.node).__name__} has a {len(shape)}-dimensional "
+                f"prefix {shape}; cannot index with {n} dimension(s)"
             )
 
-        return _IndexedHelper(self.node, idx)
+        return IndexedHelper(self.node, idx)

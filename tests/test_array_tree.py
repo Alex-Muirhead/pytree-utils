@@ -90,7 +90,7 @@ def test_blueprint_mutation():
 def test_blueprint_slots():
     proto = blueprint(World, shape=(2,))
     with pytest.raises(AttributeError):
-        proto.nonexistent = 42
+        proto.nonexistent = 42  # type: ignore unresolved-attribute
 
 
 def test_zeros_like_ones_like(world: World):
