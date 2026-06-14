@@ -11,6 +11,7 @@ requires-python = ">=3.14"
 dependencies = [
     "equinox>=0.13.6",
     "jax>=0.9.2",
+    "numpy>=2.4.6",
 ]
 
 [dependency-groups]
@@ -39,12 +40,16 @@ line-length = 108
 [tool.ruff.lint]
 select = [
     "E",    # pycodestyle errors
+    "D",    # pydocstyle
     "F",    # pyflakes
     "I",    # isort
     "N",    # pep8-naming
     "UP",   # pyupgrade
+    "ANN",  # flake8-annotations
     "B",    # flake8-bugbear
     "SIM",  # flake8-simplify
+    "TID",  # flake8-tidy-imports
+    "SLOT", # flake8-slots
     "RUF",  # ruff-specific rules
 ]
 ignore = [
@@ -53,6 +58,12 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["pytree_utils"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**.py" = [
+    "D",
+    "ANN"
+]
 
 # ---------------------------------------------------------------------------
 # Pylint  (semantic checks not covered by ruff)

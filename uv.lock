@@ -429,6 +429,7 @@ source = { editable = "." }
 dependencies = [
     { name = "equinox" },
     { name = "jax" },
+    { name = "numpy" },
 ]
 
 [package.dev-dependencies]
@@ -444,6 +445,7 @@ dev = [
 requires-dist = [
     { name = "equinox", specifier = ">=0.13.6" },
     { name = "jax", specifier = ">=0.9.2" },
+    { name = "numpy", specifier = ">=2.4.6" },
 ]
 
 [package.metadata.requires-dev]
