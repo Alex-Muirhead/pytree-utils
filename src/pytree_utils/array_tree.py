@@ -5,6 +5,8 @@ from typing import Self, TypeGuard
 
 import equinox as eqx
 import jax
+import numpy as np
+from equinox._tree import _LeafWrapper
 
 from pytree_utils.array_methods import ArrayTreeOps
 from pytree_utils.indexing import Index, IndexHelper
@@ -21,6 +23,8 @@ class ShapeMarker(tuple):
 
     __slots__ = ()
 
+    TAG = 0xC0FFEE
+
     def __new__(cls, shape: int | Sequence[int]) -> Self:
         """Construct the ShapeMarker."""
         if not isinstance(shape, Sequence):
@@ -36,21 +40,36 @@ class ShapeMarker(tuple):
             if s < 0:
                 raise ValueError("All shape values must be >= 0")
 
-    def tree_flatten(self) -> tuple[tuple[jax.Array], tuple]:
+    def tree_flatten(self) -> tuple[tuple[np.ndarray], tuple]:
         """JAX ``flatten`` function for ShapeMarker."""
         # NOTE: Do a prefix for now, then work out later if it's worth it
-        ghost = jax.numpy.empty((0, *self))
+        ghost = np.empty((self.TAG, 0, *self))
         children = (ghost,)
         aux_data = ()
         return children, aux_data
 
     @classmethod
-    def tree_unflatten(cls, aux_data: tuple, children: tuple[jax.Array]) -> Self:
+    def tree_unflatten(cls, aux_data: tuple, children: tuple[object]) -> Self:
         """JAX ``unflatten`` function for ShapeMarker."""
         del aux_data
         (ghost,) = children
-        _, *shape = ghost.shape
-        return cls(shape)
+
+        # Special case for eqx.tree_at.
+        # We lose all invariants here.
+        if isinstance(ghost, _LeafWrapper):
+            # type: ignore bad-return
+            return _LeafWrapper(cls(()))
+
+        # Casing for jax.tree.broadcast with non-arrays
+        if not isinstance(ghost, (np.ndarray, jax.Array)):
+            return cls(())
+
+        match ghost.shape:
+            case (tag, 0, *shape) if tag == cls.TAG:
+                return cls(shape)
+            case _:
+                # Casing for jax.tree.broadcast with arrays
+                return cls(ghost.shape)
 
     @classmethod
     def isinstance(cls, value: object) -> TypeGuard[Self]:
@@ -79,7 +98,7 @@ class ArrayTree(ArrayTreeOps, eqx.Module):
             if not isinstance(leaf, jax.Array):
                 raise TypeError(f"Bad leaf type at {name}\nExpected jax.Array type, got {type(leaf)}")
 
-            if leaf.shape[: self.ndim] != self.shape:
+            if leaf.shape[-self.ndim :] != self.shape:
                 raise ValueError(
                     f"Bad leaf shape at {name}\nExpected shape prefix with {self.shape}, got {leaf.shape}"
                 )
